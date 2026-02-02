@@ -1,46 +1,57 @@
 TARGET = NanoArch
-VERSION = 0.1.0
-
 # CROSS_COMPILE ?= /home/jvle/Desktop/works/Embedded/rk3506_linux6.1_sdk_v1.2.0/prebuilts/gcc/linux-x86/arm/gcc-arm-10.3-2021.07-x86_64-arm-none-linux-gnueabihf/bin/arm-none-linux-gnueabihf-
-# SYSROOT = /home/jvle/Desktop/works/Embedded/rk3506_linux6.1_sdk_v1.2.0/buildroot/output/rockchip_hd_rk3506g_evm_nand/host/arm-buildroot-linux-gnueabihf/sysroot/
+# SYSROOT ?= /home/jvle/Desktop/works/Embedded/rk3506_linux6.1_sdk_v1.2.0/buildroot/output/rockchip_hd_rk3506g_evm_nand/host/arm-buildroot-linux-gnueabihf/sysroot/
 
 CC := $(CROSS_COMPILE)gcc
+
+SRC_DIR = src
+OBJ_DIR = obj
+BIN_DIR = bin
+GB_DIR  = src/light-gb
 
 SDL2_INC = $(SYSROOT)/usr/include/SDL2
 SDL2_LIB = $(SYSROOT)/usr/lib
 
-CFLAGS = -Wall -Wextra -std=c11 \
+SRCS = $(SRC_DIR)/main.c \
+       $(SRC_DIR)/render.c \
+       $(SRC_DIR)/config.c \
+       $(SRC_DIR)/core_manager.c
+
+OBJS = $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS))
+
+CFLAGS = -Wall -Wextra -std=c11 -O3 \
          --sysroot=$(SYSROOT) \
          -I$(SDL2_INC) \
          -D_REENTRANT
 
 LDFLAGS = --sysroot=$(SYSROOT) \
           -L$(SDL2_LIB) \
-          -lSDL2 -lSDL2_ttf -lSDL2_image -ldl -lpthread -lm
+          -lSDL2 -lSDL2_ttf -lSDL2_image -lm
 
-SRC_DIR = src
-OBJ_DIR = obj
-BIN_DIR = bin
+.PHONY: all clean run nano gb
 
-SRCS = $(wildcard $(SRC_DIR)/*.c)
-OBJS = $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS))
+all: nano gb
 
-all: $(BIN_DIR)/$(TARGET)
+nano: $(BIN_DIR)/$(TARGET)
 
 $(BIN_DIR)/$(TARGET): $(OBJS)
 	@mkdir -p $(BIN_DIR)
+	@echo "Linking $(TARGET)..."
 	$(CC) $(OBJS) -o $@ $(LDFLAGS)
-	@echo "Build successful: $(BIN_DIR)/$(TARGET)"
+	@echo "Build successful: $@"
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+gb:
+	@echo "Building Light-GB Core..."
+	$(MAKE) -C $(GB_DIR)
+
 clean:
 	rm -rf $(OBJ_DIR) $(BIN_DIR)
+	$(MAKE) -C $(GB_DIR) clean
 	@echo "Cleanup complete."
 
 run:
 	$(BIN_DIR)/$(TARGET)
-
-.PHONY: all clean runTARGET = NanoArch

@@ -2,186 +2,179 @@
 #include <SDL.h>
 #include <SDL_ttf.h>
 #include <SDL_image.h>
-#include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/types.h>
 
-#include "core_api.h"
 #include "core_manager.h"
-#include "render.h" 
+#include "render.h"
 #include "config.h"
 
+// 逻辑分辨率
 #define LOGICAL_W  1280
 #define LOGICAL_H  720
 
-typedef enum { APP_MENU, APP_RUNNING } AppState;
-typedef enum { PAGE_MAIN, PAGE_CORES, PAGE_ROM_SELECT } MenuPage;
-
-typedef NanoCore* (*get_core_func_t)(void);
-
-NanoCore* current_core = NULL;
-void* core_handle = NULL;
-
-SDL_Texture* game_texture = NULL;
+typedef enum { PAGE_MAIN, PAGE_CORE_SELECT, PAGE_ROM_SELECT } MenuPage;
+SDL_Window* win = NULL;
+SDL_Renderer* ren = NULL;
 SDL_Texture* target_tex = NULL;
-uint32_t* video_buffer = NULL;
+SDL_Texture* bg_tex = NULL;
+TTF_Font* font = NULL;
 
-const char* main_menu_items[] = { "Select Core", "Quit" };
+const char* main_menu_items[] = { "Start Game", "Quit" };
 
-void unload_core() {
-    if (!current_core && !core_handle) return;
-
-    printf("[System] Unloading core...\n");
-    SDL_CloseAudio();
-
-    if (current_core && current_core->cleanup) {
-        current_core->cleanup();
+bool init_resources() {
+    if (SDL_WasInit(SDL_INIT_VIDEO) == 0) {
+        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) {
+            printf("[Error] SDL_Init failed: %s\n", SDL_GetError());
+            return false;
+        }
+        TTF_Init();
+        IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
     }
 
-    if (core_handle) {
-        dlclose(core_handle);
-        core_handle = NULL; 
+    win = SDL_CreateWindow("NanoArch", 
+                           SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 
+                           g_config.physical_w, g_config.physical_h, 
+                           SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN);
+    if (!win) {
+        printf("[Error] Window creation failed: %s\n", SDL_GetError());
+        return false;
     }
 
-    current_core = NULL;
-    printf("[System] Core unloaded.\n");
+    ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    if (!ren) {
+        ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
+    }
+    if (!ren) return false;
+
+    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+
+    target_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, LOGICAL_W, LOGICAL_H);
+
+    font = TTF_OpenFont("assets/fonts/DejaVuSans.ttf", 48);
+    if (!font) printf("[Warning] Font not found at assets/fonts/DejaVuSans.ttf!\n");
+
+    bg_tex = load_texture(ren, "assets/background/background.png");
+
+    SDL_ShowCursor(SDL_DISABLE);
+    return true;
 }
 
-bool load_core_library(const char* so_path) {
-    unload_core();
+void free_resources() {
+    if (target_tex) SDL_DestroyTexture(target_tex);
+    if (bg_tex) SDL_DestroyTexture(bg_tex);
+    if (ren) SDL_DestroyRenderer(ren);
+    if (win) SDL_DestroyWindow(win);
+    if (font) TTF_CloseFont(font);
+    
+    target_tex = NULL;
+    bg_tex = NULL;
+    ren = NULL;
+    win = NULL;
+    font = NULL;
 
-    core_handle = dlopen(so_path, RTLD_LAZY);
-    if (!core_handle) {
-        printf("Failed to load core: %s. Error: %s\n", so_path, dlerror());
-        return false;
+    IMG_Quit();
+    TTF_Quit();
+    SDL_Quit();
+}
+
+void launch_external_game(const char* exe_path, const char* rom_path) {
+    printf("[System] Launching core: %s\n", exe_path);
+    free_resources();
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        printf("[Error] Fork failed!\n");
+        init_resources();
+    } 
+    else if (pid == 0) {
+        execl(exe_path, exe_path, rom_path, NULL);
+        perror("[Error] Exec failed");
+        exit(1); 
+    } 
+    else {
+        waitpid(pid, NULL, 0);
+        init_resources();
     }
-
-    get_core_func_t get_core = (get_core_func_t)dlsym(core_handle, "get_core");
-    if (!get_core) {
-        printf("Symbol 'get_core' not found in %s\n", so_path);
-        dlclose(core_handle); core_handle = NULL;
-        return false;
-    }
-
-    current_core = get_core();
-    if (current_core->init) current_core->init();
-    printf("[System] Loaded Core: %s\n", current_core->name);
-    return true;
 }
 
 int main(int argc, char* argv[]) {
     (void)argc; (void)argv;
 
     config_load("configs/nanoarch.cfg");
+    if (!init_resources()) return -1;
 
-    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO);
-    TTF_Init();
-    IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
-
-    printf("[Init] Window Size: %dx%d\n", g_config.physical_w, g_config.physical_h);
-    SDL_Window* win = SDL_CreateWindow("NanoArch", 
-                                       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 
-                                       g_config.physical_w, g_config.physical_h, 
-                                       SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN);
-    if (!win) {
-        printf("[Error] CreateWindow failed: %s\n", SDL_GetError());
-        return -1;
-    }
-
-    SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if (!ren) {
-        printf("[Error] CreateRenderer failed: %s\n", SDL_GetError());
-        printf("[System] Fallback to Software Renderer...\n");
-        ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
-        if (!ren) {
-            printf("[Fatal] Software Renderer also failed: %s\n", SDL_GetError());
-            SDL_DestroyWindow(win);
-            return -1;
-        }
-    }
-
-    target_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, LOGICAL_W, LOGICAL_H);
-
-    TTF_Font* font = TTF_OpenFont("assets/fonts/DejaVuSans.ttf", 48);
-    if (!font) { printf("Font Error: %s\n", TTF_GetError()); return -1; }
-
-    SDL_Texture* bg_tex = load_texture(ren, "assets/background/background.png"); 
-
-    game_texture = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, 256, 240);
-    video_buffer = malloc(256 * 240 * sizeof(uint32_t));
-
-    AppState appState = APP_MENU;
     MenuPage page = PAGE_MAIN;
     int cursor = 0;
-    int selected_core_idx = -1;
+    int selected_core_idx = 0;
     bool quit = false;
     SDL_Event e;
 
     while (!quit) {
-
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) quit = true;
             
             if (e.type == SDL_KEYDOWN) {
-                if (e.key.keysym.sym == SDLK_ESCAPE) {
-                    if (appState == APP_RUNNING) {
-                        unload_core();
-                        appState = APP_MENU;
-                        break;
+                int count = 0;
+                if (page == PAGE_MAIN) count = 2;
+                else if (page == PAGE_CORE_SELECT) count = CORE_COUNT;
+                else if (page == PAGE_ROM_SELECT) count = dynamic_count;
+                if (count == 0) count = 1;
+
+                if (e.key.keysym.sym == SDLK_UP) {
+                    cursor--;
+                    if (cursor < 0) cursor = count - 1;
+                }
+                else if (e.key.keysym.sym == SDLK_DOWN) {
+                    cursor++;
+                    if (cursor >= count) cursor = 0;
+                }
+
+                else if (e.key.keysym.sym == SDLK_ESCAPE) {
+                    if (page == PAGE_ROM_SELECT) {
+                        page = PAGE_CORE_SELECT;
+                        cursor = selected_core_idx;
+                        clear_dynamic_list();
+                    } else if (page == PAGE_CORE_SELECT) {
+                        page = PAGE_MAIN;
+                        cursor = 0;
                     } else {
-                        if (page == PAGE_ROM_SELECT) {
-                            page = PAGE_CORES; 
-                            cursor = 0; 
-                        }
-                        else if (page == PAGE_CORES) {
-                            page = PAGE_MAIN; 
-                            cursor = 0; 
-                        }
+                        quit = true;
                     }
                 }
 
-                if (appState == APP_MENU) {
-                    int count = 1;
-                    if (page == PAGE_MAIN) count = 2;
-                    else if (page == PAGE_CORES) count = CORE_COUNT + 1;
-                    else if (page == PAGE_ROM_SELECT) count = dynamic_count;
-                    if (count == 0) count = 1;
-
-                    if (e.key.keysym.sym == SDLK_UP)   cursor = (cursor - 1 + count) % count;
-                    if (e.key.keysym.sym == SDLK_DOWN) cursor = (cursor + 1) % count;
-                    
-                    if (e.key.keysym.sym == SDLK_RETURN) {
-                        if (page == PAGE_MAIN) {
-                            if (cursor == 0) { page = PAGE_CORES; cursor = 0; }
-                            else if (cursor == 1) quit = true;
+                else if (e.key.keysym.sym == SDLK_RETURN) {
+                    if (page == PAGE_MAIN) {
+                        if (cursor == 0) {
+                            page = PAGE_CORE_SELECT;
+                            cursor = 0;
+                        } else {
+                            quit = true;
                         }
-                        else if (page == PAGE_CORES) {
-                            if (cursor == CORE_COUNT) { page = PAGE_MAIN; cursor = 0; }
-                            else {
-                                selected_core_idx = cursor;
-                                char so_path[256];
-                                snprintf(so_path, sizeof(so_path), "cores/%s.so", supported_cores[selected_core_idx].sub_dir);
-                                if (load_core_library(so_path)) {
-                                    scan_roms(selected_core_idx);
-                                    page = PAGE_ROM_SELECT;
-                                    cursor = 0;
-                                }
-                            }
-                        }
-                        else if (page == PAGE_ROM_SELECT) {
-                             if (dynamic_list && strcmp(dynamic_list[cursor], "<-- Back") == 0) {
-                                page = PAGE_CORES; cursor = 0;
-                            } else if (dynamic_list) {
+                    } 
+                    else if (page == PAGE_CORE_SELECT) {
+                        selected_core_idx = cursor;
+                        scan_roms(selected_core_idx);
+                        page = PAGE_ROM_SELECT;
+                        cursor = 0;
+                    } 
+                    else if (page == PAGE_ROM_SELECT) {
+                        if (dynamic_list && cursor < dynamic_count) {
+                            if (strcmp(dynamic_list[cursor], "<-- Back") == 0) {
+                                page = PAGE_CORE_SELECT;
+                                cursor = selected_core_idx;
+                                clear_dynamic_list();
+                            } else {
                                 char rom_path[512];
                                 snprintf(rom_path, sizeof(rom_path), "roms/%s/%s", 
-                                         supported_cores[selected_core_idx].sub_dir, dynamic_list[cursor]);
-                                
-                                if (current_core && current_core->load_game) {
-                                    current_core->load_game(rom_path);
-                                    appState = APP_RUNNING;
-                                }
+                                         supported_cores[selected_core_idx].sub_dir, 
+                                         dynamic_list[cursor]);
+                                launch_external_game(supported_cores[selected_core_idx].binary_path, rom_path);
                             }
                         }
                     }
@@ -189,54 +182,67 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        SDL_SetRenderTarget(ren, target_tex);
-        SDL_SetRenderDrawColor(ren, 30, 30, 35, 255);
-        SDL_RenderClear(ren);
-
-        if (appState == APP_RUNNING && current_core) {
-            // if (current_core->input) current_core->input(keys);
-            current_core->run_frame(video_buffer); // now we just run frame use emulator
-            // SDL_UpdateTexture(game_texture, NULL, video_buffer, 256 * sizeof(uint32_t));
-            // SDL_RenderCopy(ren, game_texture, NULL, NULL);
-        } 
-        else {
-            if (bg_tex) draw_background(ren, bg_tex, LOGICAL_W, LOGICAL_H);
-
-            int count = 0;
-            if (page == PAGE_MAIN) count = 2;
-            else if (page == PAGE_CORES) count = CORE_COUNT + 1;
-            else if (page == PAGE_ROM_SELECT) count = dynamic_count;
-            if (count == 0) count = 1;
-
-            for (int i = 0; i < count; i++) {
-                const char* label = "Unknown";
-                if (page == PAGE_MAIN) label = main_menu_items[i];
-                else if (page == PAGE_CORES) label = (i == CORE_COUNT) ? "<-- Back" : supported_cores[i].display_name;
-                else if (page == PAGE_ROM_SELECT) label = (dynamic_list && i < dynamic_count) ? dynamic_list[i] : "Err";
-
-                draw_menu_item(ren, font, label, i, cursor, LOGICAL_W, LOGICAL_H);
+        if (ren) {
+            SDL_SetRenderTarget(ren, target_tex);
+            SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+            SDL_RenderClear(ren);
+            draw_background(ren, bg_tex, LOGICAL_W, LOGICAL_H);
+            {
+                SDL_Color menu_color = (page == PAGE_MAIN) 
+                                     ? (SDL_Color){255, 255, 255, 255} 
+                                     : (SDL_Color){100, 100, 100, 255};
+                
+                for (int i = 0; i < 2; i++) {
+                    bool is_sel = (page == PAGE_MAIN && cursor == i);
+                    draw_menu_text(ren, font, main_menu_items[i], 100, 300 + i * 80, menu_color, is_sel);
+                }
             }
+
+            if (page == PAGE_CORE_SELECT || page == PAGE_ROM_SELECT) {
+                draw_translucent_panel(ren, 500, 0, LOGICAL_W - 500, LOGICAL_H);
+                draw_menu_text(ren, font, "Select System:", 540, 50, (SDL_Color){200,200,255,255}, false);
+                if (page == PAGE_CORE_SELECT) {
+                    for (int i = 0; i < CORE_COUNT; i++) {
+                        bool is_sel = (cursor == i);
+                        SDL_Color c = {240, 240, 240, 255};
+                        draw_menu_text(ren, font, supported_cores[i].display_name, 550, 150 + i * 80, c, is_sel);
+                    }
+                }
+            }
+
+            if (page == PAGE_ROM_SELECT) {
+                draw_translucent_panel(ren, 500, 0, LOGICAL_W - 500, LOGICAL_H);
+
+                draw_menu_text(ren, font, "Select Game:", 540, 50, (SDL_Color){200,255,200,255}, false);
+
+                int start_idx = 0;
+                int max_visible = 8;
+                if (cursor > max_visible - 1) {
+                    start_idx = cursor - (max_visible - 1);
+                }
+
+                for (int i = 0; i < dynamic_count; i++) {
+                    if (i >= start_idx && i < start_idx + max_visible) {
+                        bool is_sel = (cursor == i);
+                        SDL_Color c = {220, 220, 220, 255};
+                        int screen_y = 150 + (i - start_idx) * 60;
+                        draw_menu_text(ren, font, dynamic_list[i], 550, screen_y, c, is_sel);
+                    }
+                }
+            }
+
+            SDL_SetRenderTarget(ren, NULL);
+            SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+            SDL_RenderClear(ren);
+
+            SDL_Rect dst_rect = { 0, 0, g_config.physical_w, g_config.physical_h };
+            SDL_RenderCopyEx(ren, target_tex, NULL, &dst_rect, (double)g_config.rotation, NULL, SDL_FLIP_NONE);
+
+            SDL_RenderPresent(ren);
         }
-
-        SDL_SetRenderTarget(ren, NULL);
-        SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
-        SDL_RenderClear(ren);
-
-        SDL_Rect dst_rect = { 0, 0, g_config.physical_w, g_config.physical_h };
-        SDL_RenderCopyEx(ren, target_tex, NULL, &dst_rect, (double)g_config.rotation, NULL, SDL_FLIP_NONE);
-        SDL_RenderPresent(ren);
     }
 
-    unload_core();
-    if (video_buffer) free(video_buffer);
-    if (game_texture) SDL_DestroyTexture(game_texture);
-    if (target_tex) SDL_DestroyTexture(target_tex);
-    if (bg_tex) SDL_DestroyTexture(bg_tex);
-    
+    free_resources();
     clear_dynamic_list();
-    TTF_CloseFont(font);
-    IMG_Quit();
-    TTF_Quit();
-    SDL_Quit();
     return 0;
 }

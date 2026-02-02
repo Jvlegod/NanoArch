@@ -3,8 +3,9 @@
 
 typedef struct {
     const char* display_name;
-    const char* extension; 
+    const char* extension;
     const char* sub_dir;
+    const char* binary_path;
 } CoreInfo;
 
 extern CoreInfo supported_cores[];
