@@ -7,7 +7,9 @@ CC := $(CROSS_COMPILE)gcc
 SRC_DIR = src
 OBJ_DIR = obj
 BIN_DIR = bin
+CORE_DIR = cores
 GB_DIR  = src/light-gb
+NES_DIR = src/light-nes
 
 SDL2_INC = $(SYSROOT)/usr/include/SDL2
 SDL2_LIB = $(SYSROOT)/usr/lib
@@ -48,9 +50,22 @@ gb:
 	@echo "Building Light-GB Core..."
 	$(MAKE) -C $(GB_DIR)
 
+nes:
+	@echo "Building NES Core..."
+	$(MAKE) -C $(NES_DIR)
+
+merge:
+	@echo "Merging Cores into Bin Directory..."
+	@mkdir -p $(CORE_DIR)
+	@cp $(GB_DIR)/light-gb $(CORE_DIR)/
+	@cp $(NES_DIR)/light-nes $(CORE_DIR)/
+	
+
 clean:
 	rm -rf $(OBJ_DIR) $(BIN_DIR)
+	rm -rf $(CORE_DIR)/*
 	$(MAKE) -C $(GB_DIR) clean
+	$(MAKE) -C $(NES_DIR) cleanall
 	@echo "Cleanup complete."
 
 run:

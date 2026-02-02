@@ -1,0 +1,42 @@
+TARGET = light-nes
+
+# CC = /home/jvle/Desktop/works/Embedded/rk3506_linux6.1_sdk_v1.2.0/prebuilts/gcc/linux-x86/arm/gcc-arm-10.3-2021.07-x86_64-arm-none-linux-gnueabihf/bin/arm-none-linux-gnueabihf-gcc
+# SYSROOT = /home/jvle/Desktop/works/Embedded/rk3506_linux6.1_sdk_v1.2.0/buildroot/output/rockchip_hd_rk3506g_evm_nand/host/arm-buildroot-linux-gnueabihf/sysroot/
+
+SRCS = ./K6502.cpp \
+       ./InfoNES.cpp \
+       ./InfoNES_Mapper.cpp \
+       ./InfoNES_pAPU.cpp \
+       ./InfoNES_System_Linux.cpp
+
+OBJS = $(SRCS:.cpp=.o)
+
+CCFLAGS = -O2 -fsigned-char --sysroot=$(SYSROOT)
+INCLUDES = -I. -I$(SYSROOT)/usr/include
+
+LDFLAGS = --sysroot=$(SYSROOT) \
+          -L$(SYSROOT)/usr/lib \
+          -lstdc++ -lm -lz -lpthread -lasound
+
+.PHONY: all clean cleanall release
+
+all: $(TARGET)
+
+$(TARGET): $(OBJS)
+	@echo "Linking $(TARGET)..."
+	$(CC) -o $@ $(OBJS) $(LDFLAGS)
+	@echo "Build successful: $(TARGET)"
+
+.cpp.o:
+	@echo "Compiling $<..."
+	$(CC) -c $(CCFLAGS) $(INCLUDES) $< -o $@
+
+clean:
+	rm -f $(OBJS)
+	@echo "Cleanup objects complete."
+
+cleanall: clean
+	rm -f $(TARGET)
+	@echo "Cleanup all complete."
+
+release: cleanall all

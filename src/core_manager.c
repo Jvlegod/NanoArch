@@ -9,7 +9,7 @@ char** dynamic_list = NULL;
 int dynamic_count = 0;
 
 CoreInfo supported_cores[] = {
-    {"Nintendo (NES)", ".nes", "nes", "./cores/InfoNES"},
+    {"Nintendo (NES)", ".nes", "nes", "./cores/light-nes"},
     {"Game Boy (GB)", ".gb", "gb", "./cores/light-gb"},
 };
 
