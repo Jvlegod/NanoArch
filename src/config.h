@@ -1,0 +1,14 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+typedef struct {
+    int physical_w;
+    int physical_h;
+    int rotation;
+    int show_fps;
+} AppConfig;
+
+extern AppConfig g_config;
+void config_load(const char* filename);
+
+#endif
