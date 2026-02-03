@@ -52,6 +52,7 @@
 /*-------------------------------------------------------------------*/
 
 // Sound
+#define AUDIO_VOLUME 100
 static snd_pcm_t *playback_handle = NULL;
 
 // Framebuffer
@@ -561,31 +562,39 @@ void InfoNES_SoundClose(void)
     }
 }
 
-void InfoNES_SoundOutput(int samples, BYTE *wave1, BYTE *wave2, BYTE *wave3, BYTE *wave4, BYTE *wave5)
-{
+void InfoNES_SoundOutput(int samples, BYTE *wave1, BYTE *wave2, BYTE *wave3, BYTE *wave4, BYTE *wave5) {
     if (!playback_handle) return;
 
-    static unsigned char pcm_buf[8192]; 
+    static unsigned char pcmBuf[8192]; 
     if (samples > 8192) samples = 8192;
 
     static int last_out = 128;
 
     for (int i = 0; i < samples; i++) {
-        int mixed = (wave1[i] + wave2[i] + wave3[i] + wave4[i] + wave5[i]) / 3;
-        if (mixed > 255) mixed = 255;
-        mixed = (mixed + last_out) >> 1;
-        last_out = mixed;
+        // 1. 原始混音：先将 5 个通道求平均
+        int mixed_raw = (wave1[i] + wave2[i] + wave3[i] + wave4[i] + wave5[i]) / 5;
 
-        pcm_buf[i] = (unsigned char)mixed;
+        // 2. 转换为以 0 为中心的有符号值 (-128 到 127)
+        int centered = mixed_raw - 128;
+
+        // 3. 应用音量宏：使用整数乘除法
+        int vol_adjusted = (centered * AUDIO_VOLUME) / 100;
+
+        // 4. 转换回无符号 U8 范围 (0-255) 并进行限幅保护
+        int final_val = vol_adjusted + 128;
+        if (final_val > 255) final_val = 255;
+        if (final_val < 0)   final_val = 0;
+
+        // 5. 低通滤波 (消除刺耳感)
+        final_val = (final_val + last_out) >> 1;
+        last_out = final_val;
+
+        pcmBuf[i] = (unsigned char)final_val;
     }
 
-    snd_pcm_sframes_t ret = snd_pcm_writei(playback_handle, pcm_buf, samples);
-    
-    if (ret == -EPIPE) {
-        snd_pcm_prepare(playback_handle);
-    } else if (ret < 0) {
-        snd_pcm_recover(playback_handle, ret, 0);
-    }
+    // 写入 ALSA 设备
+    snd_pcm_sframes_t ret = snd_pcm_writei(playback_handle, pcmBuf, samples);
+    if (ret < 0) snd_pcm_recover(playback_handle, ret, 0);
 }
 
 void InfoNES_Wait() {}
