@@ -1,5 +1,8 @@
 #define _GNU_SOURCE
 #define ENABLE_SOUND 1
+#if ENABLE_SOUND == 1
+#define AUDIO_VOLUME 70
+#endif
 #define ENABLE_LCD 1
 
 /* --- configs --- */
@@ -255,7 +258,27 @@ int main(int argc, char **argv)
         if (should_render) {
             if (pcm_handle && audio_buffer) {
                 minigb_apu_audio_callback(&apu_ctx, audio_buffer);
-                snd_pcm_sframes_t f = snd_pcm_writei(pcm_handle, audio_buffer, AUDIO_SAMPLES_TOTAL/2);
+                
+                static int16_t last_l = 0, last_r = 0;
+                int samples_count = AUDIO_SAMPLES_TOTAL / 2;
+
+                for (int i = 0; i < samples_count; i++) {
+                    int16_t cur_l = (int16_t)(audio_buffer[i] & 0xFFFF);
+                    int16_t cur_r = (int16_t)((audio_buffer[i] >> 16) & 0xFFFF);
+
+                    int32_t l = (cur_l * AUDIO_VOLUME) / 100;
+                    int32_t r = (cur_r * AUDIO_VOLUME) / 100;
+
+                    int16_t out_l = (int16_t)((l + last_l) >> 1);
+                    int16_t out_r = (int16_t)((r + last_r) >> 1);
+                    
+                    last_l = out_l;
+                    last_r = out_r;
+
+                    audio_buffer[i] = (uint32_t)((uint16_t)out_r << 16) | (uint16_t)out_l;
+                }
+
+                snd_pcm_sframes_t f = snd_pcm_writei(pcm_handle, audio_buffer, samples_count);
                 if (f < 0) snd_pcm_recover(pcm_handle, f, 0);
             } else {
                 usleep(16000);

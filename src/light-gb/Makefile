@@ -1,11 +1,18 @@
-# SDK_ROOT      := /home/jvle/Desktop/works/Embedded/rk3506_linux6.1_sdk_v1.2.0/buildroot/output/rockchip_hd_rk3506g_evm_nand/host/arm-buildroot-linux-gnueabihf/sysroot/
+# SYSROOT      := /home/jvle/Desktop/works/Embedded/rk3506_linux6.1_sdk_v1.2.0/buildroot/output/rockchip_hd_rk3506g_evm_nand/host/arm-buildroot-linux-gnueabihf/sysroot/
 # CROSS_COMPILE ?= /home/jvle/Desktop/works/Embedded/rk3506_linux6.1_sdk_v1.2.0/prebuilts/gcc/linux-x86/arm/gcc-arm-10.3-2021.07-x86_64-arm-none-linux-gnueabihf/bin/arm-none-linux-gnueabihf-
 CC  := $(CROSS_COMPILE)gcc
 
-CFLAGS  := -Ofast -s --sysroot=$(SDK_ROOT) -DMINIGB_APU_AUDIO_FORMAT_S16SYS
-INCLUDES := -I. -I../../ -I$(SDK_ROOT)/usr/include
+CFLAGS  := -Ofast -s --sysroot=$(SYSROOT) -DMINIGB_APU_AUDIO_FORMAT_S16SYS
+INCLUDES := -I. -I../../ -I$(SYSROOT)/usr/include
 
-LDFLAGS := -L$(SDK_ROOT)/usr/lib
+# ARM specific flags for optimization
+# CCFLAGS += -march=armv7-a \
+#           -mcpu=cortex-a7 \
+#           -mfloat-abi=hard \
+#           -mfpu=neon-vfpv4 \
+#           -ffast-math
+
+LDFLAGS := -L$(SYSROOT)/usr/lib
 LDLIBS  := -lpthread -lasound
 
 TARGET = light-gb
