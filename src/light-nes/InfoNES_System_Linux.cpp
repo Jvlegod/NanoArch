@@ -55,6 +55,7 @@
 static snd_pcm_t *playback_handle = NULL;
 
 // Framebuffer
+#define LCD_SCALE 2
 static int fb_fd = -1;
 static unsigned char *fb_mem;
 static int px_width;
@@ -63,6 +64,8 @@ static int screen_width;
 static int lcd_width;
 static int lcd_height;
 static struct fb_var_screeninfo var;
+// accerelated palette
+static uint32_t color_LUT32[65536]; 
 
 static int *zoom_x_tab;
 static int *zoom_y_tab;
@@ -99,12 +102,27 @@ void process_input();
 /*-------------------------------------------------------------------*/
 /* Display Functions                                                */
 /*-------------------------------------------------------------------*/
+void Init_NeoPalette() {
+    for (int i = 0; i < 65536; i++) {
+        uint16_t c = (uint16_t)i;
+        uint8_t r, g, b;
 
-static inline void rgb555_to_rgb888(uint16_t c, uint8_t *r, uint8_t *g, uint8_t *b)
-{
-    *r = ((c >> 10) & 0x1F) * 255 / 31;
-    *g = ((c >>  5) & 0x1F) * 255 / 31;
-    *b = ((c >>  0) & 0x1F) * 255 / 31;
+        r = ((c >> 10) & 0x1F) * 255 / 31;
+        g = ((c >>  5) & 0x1F) * 255 / 31;
+        b = ((c >>  0) & 0x1F) * 255 / 31;
+
+        uint32_t pix = 0;
+        pix |= ((uint32_t)r << var.red.offset);
+        pix |= ((uint32_t)g << var.green.offset);
+        pix |= ((uint32_t)b << var.blue.offset);
+
+        if (var.transp.length)
+            pix |= (((1u << var.transp.length) - 1u) << var.transp.offset);
+        else
+            pix |= (0xFF << 24);
+
+        color_LUT32[i] = pix;
+    }
 }
 
 static inline uint32_t pack_pixel(uint8_t r, uint8_t g, uint8_t b)
@@ -122,25 +140,6 @@ static inline uint32_t pack_pixel(uint8_t r, uint8_t g, uint8_t b)
         pix |= (((1u << var.transp.length) - 1u) << var.transp.offset);
 
     return pix;
-}
-
-static int lcd_fb_display_px(WORD color, int x, int y)
-{
-    uint8_t r, g, b;
-    rgb555_to_rgb888((uint16_t)color, &r, &g, &b);
-    uint32_t pix = pack_pixel(r, g, b);
-
-    // 边界检查，防止越界崩溃
-    if (x >= lcd_width || y >= lcd_height) return 0;
-
-    uint8_t *p = (uint8_t *)(fb_mem + y * line_width + x * px_width);
-
-    if (var.bits_per_pixel == 16) {
-        *(uint16_t *)p = (uint16_t)pix;
-    } else if (var.bits_per_pixel == 32) {
-        *(uint32_t *)p = pix;
-    }
-    return 0;
 }
 
 static int lcd_fb_init()
@@ -262,6 +261,7 @@ int main(int argc, char **argv)
     if (lcd_fb_init() < 0) return -1;
     if (make_zoom_tab() < 0) return -1;
 
+    Init_NeoPalette();
     // 2. Initialize Input
     input_init();
 
@@ -475,19 +475,34 @@ void *InfoNES_MemorySet(void *dest, int c, int count)
     return dest;
 }
 
-void InfoNES_LoadFrame()
-{
-    int x, y;
-    int line_w;
-    WORD wColor;
+void InfoNES_LoadFrame() {
+    if (!fb_mem) return;
 
-    if (fb_fd > 0) {
-        for (y = 0; y < lcd_height; y++) {
-            line_w = zoom_y_tab[y] * NES_DISP_WIDTH;
-            for (x = 0; x < lcd_width; x++) {
-                wColor = WorkFrame[line_w + zoom_x_tab[x]];
-                lcd_fb_display_px(wColor, x, y);
+    uint32_t *dest_ptr = (uint32_t *)fb_mem;
+
+    int render_w = 256 * LCD_SCALE;
+    int render_h = 240 * LCD_SCALE;
+
+    int offset_x = (lcd_width > render_w) ? (lcd_width - render_w) / 2 : 0;
+    int offset_y = (lcd_height > render_h) ? (lcd_height - render_h) / 2 : 0;
+
+    for (int y = 0; y < 240; y++) {
+        WORD *line_src = &WorkFrame[y * NES_DISP_WIDTH];
+
+        uint32_t *first_line_dest = dest_ptr + ((y * LCD_SCALE + offset_y) * lcd_width) + offset_x;
+
+        for (int x = 0; x < 256; x++) {
+            uint32_t color = color_LUT32[line_src[x]];
+            uint32_t *p = first_line_dest + (x * LCD_SCALE);
+
+            for (int sx = 0; sx < LCD_SCALE; sx++) {
+                p[sx] = color;
             }
+        }
+
+        for (int sy = 1; sy < LCD_SCALE; sy++) {
+            uint32_t *next_line_dest = first_line_dest + (sy * lcd_width);
+            memcpy(next_line_dest, first_line_dest, render_w * sizeof(uint32_t));
         }
     }
 }
@@ -505,10 +520,8 @@ int InfoNES_SoundOpen(int samples_per_sync, int sample_rate)
 {
     int err;
     unsigned int rate = sample_rate;
-    // 尝试多个音频设备
     const char *devices[] = {"default", "plughw:0,0", "plughw:1,0", NULL};
-    
-    // 清理旧的（如果有）
+
     if (playback_handle) {
         snd_pcm_close(playback_handle);
         playback_handle = NULL;
@@ -527,12 +540,12 @@ int InfoNES_SoundOpen(int samples_per_sync, int sample_rate)
     }
 
     if ((err = snd_pcm_set_params(playback_handle,
-                                  SND_PCM_FORMAT_U8,
-                                  SND_PCM_ACCESS_RW_INTERLEAVED,
-                                  1,
-                                  rate,
-                                  1,
-                                  50000)) < 0) { // 50ms
+                              SND_PCM_FORMAT_U8,
+                              SND_PCM_ACCESS_RW_INTERLEAVED,
+                              1,
+                              rate,
+                              1,
+                              120000)) < 0) {
         printf("[Audio] Params error: %s\n", snd_strerror(err));
         return -1;
     }
@@ -550,29 +563,29 @@ void InfoNES_SoundClose(void)
 
 void InfoNES_SoundOutput(int samples, BYTE *wave1, BYTE *wave2, BYTE *wave3, BYTE *wave4, BYTE *wave5)
 {
-    int i;
-    int ret;
-    unsigned char wav;
-    unsigned char *pcmBuf;
-
     if (!playback_handle) return;
 
-    pcmBuf = (unsigned char *)malloc(samples);
-    if (!pcmBuf) return;
+    static unsigned char pcm_buf[8192]; 
+    if (samples > 8192) samples = 8192;
 
-    for (i = 0; i < samples; i++) {
-        wav = (wave1[i] + wave2[i] + wave3[i] + wave4[i] + wave5[i]) / 5;
-        pcmBuf[i] = wav;
+    static int last_out = 128;
+
+    for (int i = 0; i < samples; i++) {
+        int mixed = (wave1[i] + wave2[i] + wave3[i] + wave4[i] + wave5[i]) / 3;
+        if (mixed > 255) mixed = 255;
+        mixed = (mixed + last_out) >> 1;
+        last_out = mixed;
+
+        pcm_buf[i] = (unsigned char)mixed;
     }
 
-    ret = snd_pcm_writei(playback_handle, pcmBuf, samples);
+    snd_pcm_sframes_t ret = snd_pcm_writei(playback_handle, pcm_buf, samples);
+    
     if (ret == -EPIPE) {
         snd_pcm_prepare(playback_handle);
     } else if (ret < 0) {
-        printf("[Audio] Write error: %s\n", snd_strerror(ret));
+        snd_pcm_recover(playback_handle, ret, 0);
     }
-
-    free(pcmBuf);
 }
 
 void InfoNES_Wait() {}

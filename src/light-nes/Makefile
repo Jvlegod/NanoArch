@@ -11,7 +11,15 @@ SRCS = ./K6502.cpp \
 
 OBJS = $(SRCS:.cpp=.o)
 
-CCFLAGS = -O2 -fsigned-char --sysroot=$(SYSROOT)
+CCFLAGS = -O3 -fsigned-char --sysroot=$(SYSROOT)
+
+# ARM specific flags for optimization
+# CCFLAGS += -march=armv7-a \
+#           -mcpu=cortex-a7 \
+#           -mfloat-abi=hard \
+#           -mfpu=neon-vfpv4 \
+#           -ffast-math
+
 INCLUDES = -I. -I$(SYSROOT)/usr/include
 
 LDFLAGS = --sysroot=$(SYSROOT) \
