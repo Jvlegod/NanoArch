@@ -16,7 +16,7 @@ LDFLAGS := -L$(SYSROOT)/usr/lib
 LDLIBS  := -lpthread -lasound
 
 TARGET = light-gb
-SRCS = light-gb.c fbMiniFB.c minigb_apu/minigb_apu.c
+SRCS = light-gb.c fbMiniFB.c minigb_apu/minigb_apu.c ../input.c ../audio.c ../config.c
 OBJS = $(SRCS:.c=.o)
 
 all: $(TARGET)

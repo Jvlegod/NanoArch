@@ -29,11 +29,29 @@
 #include "InfoNES_System.h"
 #include "InfoNES_pAPU.h"
 
+extern "C" {
+    #include "../input.h"
+    #include "../audio.h"
+    #include "../config.h"
+}
+
 /*-------------------------------------------------------------------*/
 /* Configuration                                                    */
 /*-------------------------------------------------------------------*/
 
 #define INPUT_DEVICE_PATH "/dev/input/event3" 
+
+static input_map_t nes_keymap[] = {
+    {KEY_UP,        VKEY_UP}, 
+    {KEY_DOWN,      VKEY_DOWN}, 
+    {KEY_LEFT,      VKEY_LEFT}, 
+    {KEY_RIGHT,     VKEY_RIGHT},
+    {KEY_Z,         VKEY_A}, 
+    {KEY_X,         VKEY_B}, 
+    {KEY_ENTER,     VKEY_START}, 
+    {KEY_BACKSPACE, VKEY_SELECT},
+    {KEY_ESC,       VKEY_EXT_QUIT}
+};
 
 #define NES_A       (1 << 0)
 #define NES_B       (1 << 1)
@@ -52,8 +70,9 @@
 /*-------------------------------------------------------------------*/
 
 // Sound
+#define NES_SAMPLE_RATE 44100
 #define AUDIO_VOLUME 100
-static snd_pcm_t *playback_handle = NULL;
+static audio_ctx_t *nes_actx = NULL;
 
 // Framebuffer
 #define LCD_SCALE 2
@@ -72,7 +91,7 @@ static int *zoom_x_tab;
 static int *zoom_y_tab;
 
 // Input
-static int input_fd = -1;
+static input_ctx_t *nes_ictx = NULL;
 
 // ROM Info
 char szRomName[256];
@@ -84,10 +103,11 @@ pthread_t emulation_tid;
 int bThread = FALSE;
 volatile int g_bLoop = TRUE;
 
-// Pad State (Shared with InfoNES core)
+// Pad State
 DWORD dwKeyPad1 = 0;
 DWORD dwKeyPad2 = 0;
 DWORD dwKeySystem = 0;
+
 
 /*-------------------------------------------------------------------*/
 /* Function prototypes                                              */
@@ -196,54 +216,27 @@ int make_zoom_tab()
 }
 
 /*-------------------------------------------------------------------*/
-/* Input Functions (Replaces game_input.c)                          */
+/* Input Functions                                                   */
 /*-------------------------------------------------------------------*/
 
-int input_init()
-{
-    input_fd = open(INPUT_DEVICE_PATH, O_RDONLY | O_NONBLOCK);
-    if (input_fd < 0) {
-        printf("[Input] Failed to open %s: %s\n", INPUT_DEVICE_PATH, strerror(errno));
-        return -1;
-    }
-    printf("[Input] Opened %s successfully.\n", INPUT_DEVICE_PATH);
-    return 0;
-}
-
-void process_input()
-{
-    struct input_event ev;
-    if (input_fd < 0) return;
-
-    while (read(input_fd, &ev, sizeof(ev)) > 0) {
-        if (ev.type == EV_KEY) {
-            int pressed = ev.value; // 1=Press, 0=Release, 2=Repeat
-            if (ev.value == 2) continue; // Ignore repeat for now
-
-            // Helper macro to set/clear bit
-            #define KEY_MAP(mask) do { \
-                if (pressed) dwKeyPad1 |= (mask); \
-                else         dwKeyPad1 &= ~(mask); \
-            } while(0)
-
-            switch (ev.code) {
-                case KEY_UP:    KEY_MAP(NES_UP); break;
-                case KEY_DOWN:  KEY_MAP(NES_DOWN); break;
-                case KEY_LEFT:  KEY_MAP(NES_LEFT); break;
-                case KEY_RIGHT: KEY_MAP(NES_RIGHT); break;
-                case KEY_Z:         KEY_MAP(NES_A); break;      // A
-                case KEY_X:         KEY_MAP(NES_B); break;      // B
-                case KEY_ENTER:     KEY_MAP(NES_START); break;  // Start
-                case KEY_BACKSPACE: KEY_MAP(NES_SELECT); break; // Select
-
-                case KEY_ESC:
-                    if (pressed) {
-                        printf("[System] ESC pressed. Exiting...\n");
-                        g_bLoop = FALSE;
-                    }
-                    break;
+void nes_input_handler(vkey_t vkey, int pressed, void *user_data) {
+    switch (vkey) {
+        case VKEY_UP:     if(pressed) dwKeyPad1 |= NES_UP;     else dwKeyPad1 &= ~NES_UP; break;
+        case VKEY_DOWN:   if(pressed) dwKeyPad1 |= NES_DOWN;   else dwKeyPad1 &= ~NES_DOWN; break;
+        case VKEY_LEFT:   if(pressed) dwKeyPad1 |= NES_LEFT;   else dwKeyPad1 &= ~NES_LEFT; break;
+        case VKEY_RIGHT:  if(pressed) dwKeyPad1 |= NES_RIGHT;  else dwKeyPad1 &= ~NES_RIGHT; break;
+        case VKEY_A:      if(pressed) dwKeyPad1 |= NES_A;      else dwKeyPad1 &= ~NES_A; break;
+        case VKEY_B:      if(pressed) dwKeyPad1 |= NES_B;      else dwKeyPad1 &= ~NES_B; break;
+        case VKEY_START:  if(pressed) dwKeyPad1 |= NES_START;  else dwKeyPad1 &= ~NES_START; break;
+        case VKEY_SELECT: if(pressed) dwKeyPad1 |= NES_SELECT; else dwKeyPad1 &= ~NES_SELECT; break;
+        
+        case VKEY_EXT_QUIT:
+            if(pressed) {
+                printf("[System] Quit requested via input handler.\n");
+                g_bLoop = FALSE;
             }
-        }
+            break;
+        default: break;
     }
 }
 
@@ -264,14 +257,20 @@ int main(int argc, char **argv)
 
     Init_NeoPalette();
     // 2. Initialize Input
-    input_init();
+    nes_ictx = input_init(INPUT_DEVICE_PATH, nes_keymap, sizeof(nes_keymap)/sizeof(input_map_t));
+    if (!nes_ictx) {
+        printf("[Input] Error: Could not open %s\n", INPUT_DEVICE_PATH);
+        return -1;
+    }
+    input_set_handler(nes_ictx, nes_input_handler, NULL);
 
     // 3. Start Game
     start_application(argv[1]);
 
     // 4. Main Loop (Input Polling)
+    printf("[System] NES Started. Z=A, X=B, Enter=Start, Back=Select, ESC=Quit\n");
     while (g_bLoop) {
-        process_input();
+        input_update(nes_ictx);
         usleep(1000); // 1ms sleep to prevent 100% CPU usage in input thread
     }
 
@@ -282,10 +281,10 @@ int main(int argc, char **argv)
     }
 
     InfoNES_SoundClose();
+    input_close(nes_ictx);
 
     if (fb_mem && fb_mem != (void*)-1) munmap(fb_mem, screen_width);
     if (fb_fd >= 0) close(fb_fd);
-    if (input_fd >= 0) close(input_fd);
     if (zoom_x_tab) free(zoom_x_tab);
     if (zoom_y_tab) free(zoom_y_tab);
 
@@ -519,82 +518,34 @@ void InfoNES_SoundInit(void) {}
 
 int InfoNES_SoundOpen(int samples_per_sync, int sample_rate)
 {
-    int err;
-    unsigned int rate = sample_rate;
-    const char *devices[] = {"default", "plughw:0,0", "plughw:1,0", NULL};
-
-    if (playback_handle) {
-        snd_pcm_close(playback_handle);
-        playback_handle = NULL;
+    config_load("configs/nanoarch.cfg");
+    nes_actx = audio_init(sample_rate, 1, g_config.volume, 1);
+    
+    if (nes_actx == NULL) {
+        printf("[Audio] Failed to initialize unified audio system\n");
+        return 0;
     }
-
-    for (int i = 0; devices[i]; i++) {
-        if ((err = snd_pcm_open(&playback_handle, devices[i], SND_PCM_STREAM_PLAYBACK, 0)) >= 0) {
-            printf("[Audio] Opened device '%s'\n", devices[i]);
-            break;
-        }
-    }
-
-    if (!playback_handle) {
-        printf("[Audio] Failed to open any audio device.\n");
-        return -1;
-    }
-
-    if ((err = snd_pcm_set_params(playback_handle,
-                              SND_PCM_FORMAT_U8,
-                              SND_PCM_ACCESS_RW_INTERLEAVED,
-                              1,
-                              rate,
-                              1,
-                              120000)) < 0) {
-        printf("[Audio] Params error: %s\n", snd_strerror(err));
-        return -1;
-    }
-
     return 1;
 }
 
 void InfoNES_SoundClose(void)
 {
-    if (playback_handle) {
-        snd_pcm_close(playback_handle);
-        playback_handle = NULL;
+    if (nes_actx) {
+        audio_close(nes_actx);
+        nes_actx = NULL;
     }
 }
 
 void InfoNES_SoundOutput(int samples, BYTE *wave1, BYTE *wave2, BYTE *wave3, BYTE *wave4, BYTE *wave5) {
-    if (!playback_handle) return;
+    if (!nes_actx) return;
 
-    static unsigned char pcmBuf[8192]; 
+    static uint8_t pcmBuf[8192]; 
     if (samples > 8192) samples = 8192;
 
-    static int last_out = 128;
-
     for (int i = 0; i < samples; i++) {
-        // 1. 原始混音：先将 5 个通道求平均
-        int mixed_raw = (wave1[i] + wave2[i] + wave3[i] + wave4[i] + wave5[i]) / 5;
-
-        // 2. 转换为以 0 为中心的有符号值 (-128 到 127)
-        int centered = mixed_raw - 128;
-
-        // 3. 应用音量宏：使用整数乘除法
-        int vol_adjusted = (centered * AUDIO_VOLUME) / 100;
-
-        // 4. 转换回无符号 U8 范围 (0-255) 并进行限幅保护
-        int final_val = vol_adjusted + 128;
-        if (final_val > 255) final_val = 255;
-        if (final_val < 0)   final_val = 0;
-
-        // 5. 低通滤波 (消除刺耳感)
-        final_val = (final_val + last_out) >> 1;
-        last_out = final_val;
-
-        pcmBuf[i] = (unsigned char)final_val;
+        pcmBuf[i] = (uint8_t)((wave1[i] + wave2[i] + wave3[i] + wave4[i] + wave5[i]) / 5);
     }
-
-    // 写入 ALSA 设备
-    snd_pcm_sframes_t ret = snd_pcm_writei(playback_handle, pcmBuf, samples);
-    if (ret < 0) snd_pcm_recover(playback_handle, ret, 0);
+    audio_play_mono8(nes_actx, pcmBuf, samples);
 }
 
 void InfoNES_Wait() {}

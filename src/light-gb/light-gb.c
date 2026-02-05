@@ -1,8 +1,5 @@
 #define _GNU_SOURCE
 #define ENABLE_SOUND 1
-#if ENABLE_SOUND == 1
-#define AUDIO_VOLUME 70
-#endif
 #define ENABLE_LCD 1
 
 /* --- configs --- */
@@ -21,6 +18,10 @@
 #include <linux/input.h>
 #include <alsa/asoundlib.h>
 
+#include "../input.h"
+#include "../audio.h"
+#include "../config.h"
+
 uint8_t audio_read(const uint16_t addr);
 void audio_write(const uint16_t addr, const uint8_t val);
 
@@ -28,21 +29,25 @@ void audio_write(const uint16_t addr, const uint8_t val);
 #include "minigb_apu/minigb_apu.h"
 #include "MiniFB.h"
 
-#ifndef JOYPAD_START
-#define JOYPAD_RIGHT  0x01
-#define JOYPAD_LEFT   0x02
-#define JOYPAD_UP     0x04
-#define JOYPAD_DOWN   0x08
-#define JOYPAD_A      0x10
-#define JOYPAD_B      0x20
-#define JOYPAD_SELECT 0x40
-#define JOYPAD_START  0x80
-#endif
+static input_map_t gb_keymap[] = {
+    {KEY_UP,        VKEY_UP}, 
+    {KEY_DOWN,      VKEY_DOWN}, 
+    {KEY_LEFT,      VKEY_LEFT}, 
+    {KEY_RIGHT,     VKEY_RIGHT},
+    {KEY_Z,         VKEY_A}, 
+    {KEY_X,         VKEY_B}, 
+    {KEY_ENTER,     VKEY_START}, 
+    {KEY_BACKSPACE, VKEY_SELECT},
+    {KEY_SPACE,     VKEY_EXT_FAST}, 
+    {KEY_R,         VKEY_EXT_RESET}, 
+    {KEY_P,         VKEY_EXT_PALETTE}, 
+    {KEY_ESC,       VKEY_EXT_QUIT}
+};
 
 static struct minigb_apu_ctx apu_ctx;
 static snd_pcm_t *pcm_handle = NULL;
+static audio_ctx_t *actx = NULL;
 static audio_sample_t *audio_buffer = NULL;
-static int input_fd = -1;
 
 struct priv_t
 {
@@ -81,7 +86,13 @@ uint8_t *read_file(const char *filename, size_t *size_out) {
     long sz = ftell(f);
     rewind(f);
     uint8_t *buf = malloc(sz);
-    if (buf) fread(buf, 1, sz, f);
+    if (buf) {
+        size_t read_sz = fread(buf, 1, sz, f);
+        if (read_sz != (size_t)sz) {
+            free(buf);
+            buf = NULL;
+        }
+    }
     if (size_out) *size_out = sz;
     fclose(f);
     return buf;
@@ -109,72 +120,14 @@ void handle_save(const char *rom_path, int save) {
         memset(priv.cart_ram, 0, priv.save_size);
         FILE *f = fopen(save_path, "rb");
         if (f) {
-            fread(priv.cart_ram, 1, priv.save_size, f);
+            size_t read_sz = fread(priv.cart_ram, 1, priv.save_size, f);
+            if (read_sz != priv.save_size) {
+                printf("[Warning] Save file read incomplete.\n");
+            }
             fclose(f);
             printf("[System] Loaded save from %s\n", save_path);
         }
     }
-}
-
-void input_init() {
-    input_fd = open(INPUT_DEVICE_PATH, O_RDONLY | O_NONBLOCK);
-    if (input_fd < 0) {
-        fprintf(stderr, "[Input] Failed to open %s: %s\n", INPUT_DEVICE_PATH, strerror(errno));
-    } else {
-        printf("[Input] Opened %s successfully.\n", INPUT_DEVICE_PATH);
-    }
-}
-
-int process_input(struct gb_s *gb, int *fast_mode) {
-    struct input_event ev;
-    if (input_fd < 0) return 0;
-
-    while (read(input_fd, &ev, sizeof(ev)) > 0) {
-        if (ev.type == EV_KEY) {
-            int pressed = ev.value;
-            if (ev.value == 2) continue; 
-
-            #define KEY_ACTION(mask) do { \
-                if (pressed) gb->direct.joypad &= ~(mask); \
-                else         gb->direct.joypad |= (mask); \
-            } while(0)
-
-            switch (ev.code) {
-                case KEY_UP:    KEY_ACTION(JOYPAD_UP); break;
-                case KEY_DOWN:  KEY_ACTION(JOYPAD_DOWN); break;
-                case KEY_LEFT:  KEY_ACTION(JOYPAD_LEFT); break;
-                case KEY_RIGHT: KEY_ACTION(JOYPAD_RIGHT); break;
-                case KEY_Z:         KEY_ACTION(JOYPAD_A); break;
-                case KEY_X:         KEY_ACTION(JOYPAD_B); break;
-                case KEY_ENTER:     KEY_ACTION(JOYPAD_START); break;
-                case KEY_BACKSPACE: KEY_ACTION(JOYPAD_SELECT); break;
-
-                case KEY_SPACE: 
-                    *fast_mode = pressed ? 3 : 1;
-                    break;
-                
-                case KEY_R:
-                    if (pressed) {
-                        gb_reset(gb);
-                        printf("[System] Reset\n");
-                    }
-                    break;
-                
-                case KEY_P:
-                    if (pressed) {
-                        current_palette_idx = (current_palette_idx + 1) % 4;
-                        memcpy(priv.palette, palettes[current_palette_idx], sizeof(priv.palette));
-                        printf("[System] Palette: %d\n", current_palette_idx);
-                    }
-                    break;
-
-                case KEY_ESC:
-                    if (pressed) return 1;
-                    break;
-            }
-        }
-    }
-    return 0;
 }
 
 #if ENABLE_LCD
@@ -184,26 +137,47 @@ void lcd_draw_line(struct gb_s *gb, const uint8_t pixels[160], const uint_fast8_
         priv.fb[line][x] = priv.palette[pixels[x] & 3];
 }
 #endif
+/* input system */
+int fast_mode = 1;
+int should_quit = 0;
 
-int audio_init(void) {
-    int err;
-    const char *devs[] = {"default", "plughw:0,0", "plughw:1,0", NULL};
-    for(int i=0; devs[i]; i++) {
-        if (snd_pcm_open(&pcm_handle, devs[i], SND_PCM_STREAM_PLAYBACK, 0) >= 0) {
-            printf("[Audio] Opened %s\n", devs[i]);
+void gb_input_handler(vkey_t vkey, int pressed, void *user_data) {
+    struct gb_s *gb = (struct gb_s *)user_data;
+
+    switch (vkey) {
+        case VKEY_UP:     if(pressed) gb->direct.joypad &= ~JOYPAD_UP; else gb->direct.joypad |= JOYPAD_UP; break;
+        case VKEY_DOWN:   if(pressed) gb->direct.joypad &= ~JOYPAD_DOWN; else gb->direct.joypad |= JOYPAD_DOWN; break;
+        case VKEY_LEFT:   if(pressed) gb->direct.joypad &= ~JOYPAD_LEFT; else gb->direct.joypad |= JOYPAD_LEFT; break;
+        case VKEY_RIGHT:  if(pressed) gb->direct.joypad &= ~JOYPAD_RIGHT; else gb->direct.joypad |= JOYPAD_RIGHT; break;
+        case VKEY_A:      if(pressed) gb->direct.joypad &= ~JOYPAD_A; else gb->direct.joypad |= JOYPAD_A; break;
+        case VKEY_B:      if(pressed) gb->direct.joypad &= ~JOYPAD_B; else gb->direct.joypad |= JOYPAD_B; break;
+        case VKEY_START:  if(pressed) gb->direct.joypad &= ~JOYPAD_START; else gb->direct.joypad |= JOYPAD_START; break;
+        case VKEY_SELECT: if(pressed) gb->direct.joypad &= ~JOYPAD_SELECT; else gb->direct.joypad |= JOYPAD_SELECT; break;
+
+        case VKEY_EXT_FAST:
+            fast_mode = pressed ? 3 : 1;
             break;
-        }
+        case VKEY_EXT_RESET:
+            if (pressed) { gb_reset(gb); printf("[System] Reset\n"); }
+            break;
+        case VKEY_EXT_PALETTE:
+            if (pressed) {
+                current_palette_idx = (current_palette_idx + 1) % 4;
+                memcpy(priv.palette, palettes[current_palette_idx], sizeof(priv.palette));
+            }
+            break;
+        case VKEY_EXT_QUIT:
+            if (pressed) should_quit = 1;
+            break;
+        default: break;
     }
-    if (!pcm_handle) return -1;
-    snd_pcm_set_params(pcm_handle, SND_PCM_FORMAT_S16, SND_PCM_ACCESS_RW_INTERLEAVED, 2, AUDIO_SAMPLE_RATE, 1, 50000);
-    return 0;
 }
 
 int main(int argc, char **argv)
 {
     struct gb_s gb;
     enum gb_init_error_e ret;
-    int fast_mode = 1;
+    config_load("configs/nanoarch.cfg");
 
     if(argc != 2) {
         printf("Usage: %s ROM_FILE\n", argv[0]);
@@ -228,19 +202,26 @@ int main(int argc, char **argv)
 #endif
     if (mfb_open("Peanut-GB", LCD_WIDTH, LCD_HEIGHT) < 0) return 1;
     
-    if (audio_init() == 0) {
+    actx = audio_init(44100, 2, g_config.volume, 0);
+
+    if (actx) {
         minigb_apu_audio_init(&apu_ctx);
         audio_buffer = malloc(AUDIO_SAMPLES_TOTAL * sizeof(audio_sample_t));
     } else {
-        printf("[Warning] Audio init failed\n");
+        printf("[Warning] Audio system init failed\n");
     }
 
-    input_init();
+    input_ctx_t *ictx = input_init(INPUT_DEVICE_PATH, gb_keymap, 12);
+    if (!ictx) {
+        printf("[Input] Error: Failed to open %s\n", INPUT_DEVICE_PATH);
+        return 1;
+    }
+    input_set_handler(ictx, gb_input_handler, &gb);
 
     printf("[System] Started. Keys: Z=A, X=B, Enter=Start, Back=Select, Space=Fast, R=Reset, P=Palette, ESC=Quit\n");
 
-    while(1) {
-        if (process_input(&gb, &fast_mode)) break;
+    while(!should_quit) {
+        input_update(ictx);
         gb_run_frame(&gb);
 
         static int skip_counter = 0;
@@ -256,30 +237,9 @@ int main(int argc, char **argv)
         }
 
         if (should_render) {
-            if (pcm_handle && audio_buffer) {
+            if (actx && audio_buffer) {
                 minigb_apu_audio_callback(&apu_ctx, audio_buffer);
-                
-                static int16_t last_l = 0, last_r = 0;
-                int samples_count = AUDIO_SAMPLES_TOTAL / 2;
-
-                for (int i = 0; i < samples_count; i++) {
-                    int16_t cur_l = (int16_t)(audio_buffer[i] & 0xFFFF);
-                    int16_t cur_r = (int16_t)((audio_buffer[i] >> 16) & 0xFFFF);
-
-                    int32_t l = (cur_l * AUDIO_VOLUME) / 100;
-                    int32_t r = (cur_r * AUDIO_VOLUME) / 100;
-
-                    int16_t out_l = (int16_t)((l + last_l) >> 1);
-                    int16_t out_r = (int16_t)((r + last_r) >> 1);
-                    
-                    last_l = out_l;
-                    last_r = out_r;
-
-                    audio_buffer[i] = (uint32_t)((uint16_t)out_r << 16) | (uint16_t)out_l;
-                }
-
-                snd_pcm_sframes_t f = snd_pcm_writei(pcm_handle, audio_buffer, samples_count);
-                if (f < 0) snd_pcm_recover(pcm_handle, f, 0);
+                audio_play_stereo32(actx, (uint32_t *)audio_buffer, AUDIO_SAMPLES_TOTAL / 2);
             } else {
                 usleep(16000);
             }
@@ -290,11 +250,12 @@ int main(int argc, char **argv)
 
     handle_save(argv[1], 1);
     mfb_close();
+    input_close(ictx);
+    audio_close(actx);
     if (pcm_handle) snd_pcm_close(pcm_handle);
     if (audio_buffer) free(audio_buffer);
     free(priv.rom);
     free(priv.cart_ram);
-    if (input_fd > 0) close(input_fd);
 
     return 0;
 }

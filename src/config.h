@@ -5,7 +5,7 @@ typedef struct {
     int physical_w;
     int physical_h;
     int rotation;
-    int show_fps;
+    int volume; // 0-100
 } AppConfig;
 
 extern AppConfig g_config;

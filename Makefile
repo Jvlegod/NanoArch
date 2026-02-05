@@ -17,7 +17,8 @@ SDL2_LIB = $(SYSROOT)/usr/lib
 SRCS = $(SRC_DIR)/main.c \
        $(SRC_DIR)/render.c \
        $(SRC_DIR)/config.c \
-       $(SRC_DIR)/core_manager.c
+       $(SRC_DIR)/core_manager.c \
+	   $(SRC_DIR)/input.c
 
 OBJS = $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS))
 
@@ -32,7 +33,7 @@ LDFLAGS = --sysroot=$(SYSROOT) \
 
 .PHONY: all clean run nano gb
 
-all: nano gb
+all: nano gb nes
 
 nano: $(BIN_DIR)/$(TARGET)
 

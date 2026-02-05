@@ -3,13 +3,17 @@ TARGET = light-nes
 # CC = /home/jvle/Desktop/works/Embedded/rk3506_linux6.1_sdk_v1.2.0/prebuilts/gcc/linux-x86/arm/gcc-arm-10.3-2021.07-x86_64-arm-none-linux-gnueabihf/bin/arm-none-linux-gnueabihf-gcc
 # SYSROOT = /home/jvle/Desktop/works/Embedded/rk3506_linux6.1_sdk_v1.2.0/buildroot/output/rockchip_hd_rk3506g_evm_nand/host/arm-buildroot-linux-gnueabihf/sysroot/
 
-SRCS = ./K6502.cpp \
-       ./InfoNES.cpp \
-       ./InfoNES_Mapper.cpp \
-       ./InfoNES_pAPU.cpp \
-       ./InfoNES_System_Linux.cpp
+CSRCS = ../input.c \
+		../audio.c \
+		../config.c
 
-OBJS = $(SRCS:.cpp=.o)
+CPPSRCS = ./K6502.cpp \
+          ./InfoNES.cpp \
+          ./InfoNES_Mapper.cpp \
+          ./InfoNES_pAPU.cpp \
+          ./InfoNES_System_Linux.cpp
+
+OBJS = $(CSRCS:.c=.o) $(CPPSRCS:.cpp=.o)
 
 CCFLAGS = -O3 -fsigned-char --sysroot=$(SYSROOT)
 
@@ -26,7 +30,7 @@ LDFLAGS = --sysroot=$(SYSROOT) \
           -L$(SYSROOT)/usr/lib \
           -lstdc++ -lm -lz -lpthread -lasound
 
-.PHONY: all clean cleanall release
+.PHONY: all clean cleanall
 
 all: $(TARGET)
 
@@ -35,8 +39,12 @@ $(TARGET): $(OBJS)
 	$(CC) -o $@ $(OBJS) $(LDFLAGS)
 	@echo "Build successful: $(TARGET)"
 
-.cpp.o:
-	@echo "Compiling $<..."
+%.o: %.cpp
+	@echo "Compiling C++ source $<..."
+	$(CC) -c $(CCFLAGS) $(INCLUDES) $< -o $@
+
+%.o: %.c
+	@echo "Compiling C source $<..."
 	$(CC) -c $(CCFLAGS) $(INCLUDES) $< -o $@
 
 clean:
@@ -46,5 +54,3 @@ clean:
 cleanall: clean
 	rm -f $(TARGET)
 	@echo "Cleanup all complete."
-
-release: cleanall all

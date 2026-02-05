@@ -13,54 +13,145 @@
 #include "core_manager.h"
 #include "render.h"
 #include "config.h"
+#include "input.h"
 
-// 逻辑分辨率
 #define LOGICAL_W  1280
 #define LOGICAL_H  720
 
-typedef enum { PAGE_MAIN, PAGE_CORE_SELECT, PAGE_ROM_SELECT } MenuPage;
+#define MENU_X_REL      0.08f
+#define PANEL_X_REL     0.42f
+#define TITLE_Y_REL     0.10f
+#define LIST_Y_REL      0.22f
+#define ITEM_H_REL      0.10f 
+
+typedef enum {
+    PAGE_MAIN,
+    PAGE_CORE_SELECT,
+    PAGE_ROM_SELECT,
+    PAGE_SETTINGS
+} MenuPage;
+
+/* SDL2 */
 SDL_Window* win = NULL;
 SDL_Renderer* ren = NULL;
 SDL_Texture* target_tex = NULL;
 SDL_Texture* bg_tex = NULL;
 TTF_Font* font = NULL;
 
-const char* main_menu_items[] = { "Start Game", "Quit" };
+typedef struct {
+    SDL_Keycode sdl_key;
+    vkey_t vkey;
+} sdl_input_map_t;
+
+typedef struct {
+    MenuPage *page;
+    int *cursor;
+    bool *quit;
+    int *selected_core_idx;
+} MgrState;
+
+static sdl_input_map_t key_map[] = {
+    {SDLK_UP,     VKEY_UP},     {SDLK_DOWN,   VKEY_DOWN},
+    {SDLK_LEFT,   VKEY_LEFT},   {SDLK_RIGHT,  VKEY_RIGHT},
+    {SDLK_z,      VKEY_A},      {SDLK_x,      VKEY_B},
+    {SDLK_RETURN, VKEY_START},  {SDLK_ESCAPE, VKEY_EXT_QUIT}
+};
+
+const char* main_menu_items[] = { "Start Game", "Settings", "Quit" };
+
+void mgr_input_handler(vkey_t vkey, int pressed, void *user_data) {
+    if (!pressed) return;
+    MgrState *state = (MgrState*)user_data;
+
+    int count = 1;
+    if (*state->page == PAGE_MAIN) count = sizeof(main_menu_items) / sizeof(main_menu_items[0]);
+    else if (*state->page == PAGE_CORE_SELECT) count = CORE_COUNT;
+    else if (*state->page == PAGE_ROM_SELECT) count = dynamic_count;
+
+    if (*state->page == PAGE_SETTINGS) {
+        if (vkey == VKEY_LEFT) {
+            if (g_config.volume >= 10) g_config.volume -= 10;
+        } else if (vkey == VKEY_RIGHT) {
+            if (g_config.volume <= 90) g_config.volume += 10;
+        } else if (vkey == VKEY_B || vkey == VKEY_EXT_QUIT) {
+            *state->page = PAGE_MAIN;
+            *state->cursor = 1;
+            config_save("configs/nanoarch.cfg"); 
+        }
+        return; 
+    }
+
+    switch (vkey) {
+        case VKEY_UP:
+            *state->cursor = (*state->cursor <= 0) ? (count - 1) : (*state->cursor - 1);
+            break;
+        case VKEY_DOWN:
+            *state->cursor = (*state->cursor >= count - 1) ? 0 : (*state->cursor + 1);
+            break;
+        case VKEY_EXT_QUIT:
+        case VKEY_B:
+            if (*state->page == PAGE_ROM_SELECT) {
+                *state->page = PAGE_CORE_SELECT;
+                *state->cursor = 0;
+                clear_dynamic_list();
+            } else if (*state->page == PAGE_CORE_SELECT) {
+                *state->page = PAGE_MAIN;
+                *state->cursor = 0;
+            } else {
+                *state->quit = true;
+            }
+            break;
+        case VKEY_A:
+        case VKEY_START:
+            if (*state->page == PAGE_MAIN) {
+                if (*state->cursor == 0) {
+                    *state->page = PAGE_CORE_SELECT;
+                    *state->cursor = 0;
+                } else if (*state->cursor == 1) {
+                    *state->page = PAGE_SETTINGS;
+                } else {
+                    *state->quit = true;
+                }
+            } else if (*state->page == PAGE_CORE_SELECT) {
+                *state->selected_core_idx = *state->cursor;
+                scan_roms(*state->selected_core_idx);
+                *state->page = PAGE_ROM_SELECT;
+                *state->cursor = 0;
+            } else if (*state->page == PAGE_ROM_SELECT) {
+                if (dynamic_list && *state->cursor < dynamic_count) {
+                    if (strcmp(dynamic_list[*state->cursor], "<-- Back") == 0) {
+                        *state->page = PAGE_CORE_SELECT;
+                        *state->cursor = *state->selected_core_idx;
+                        clear_dynamic_list();
+                    } else {
+                        char rom_path[512];
+                        snprintf(rom_path, sizeof(rom_path), "roms/%s/%s", 
+                                 supported_cores[*state->selected_core_idx].sub_dir, 
+                                 dynamic_list[*state->cursor]);
+                        launch_external_game(supported_cores[*state->selected_core_idx].binary_path, rom_path);
+                    }
+                }
+            }
+            break;
+        default: break;
+    }
+}
 
 bool init_resources() {
     if (SDL_WasInit(SDL_INIT_VIDEO) == 0) {
-        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) {
-            printf("[Error] SDL_Init failed: %s\n", SDL_GetError());
-            return false;
-        }
-        TTF_Init();
-        IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
+        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) return false;
+        TTF_Init(); IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
     }
-
-    win = SDL_CreateWindow("NanoArch", 
-                           SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 
+    win = SDL_CreateWindow("NanoArch", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 
                            g_config.physical_w, g_config.physical_h, 
                            SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN);
-    if (!win) {
-        printf("[Error] Window creation failed: %s\n", SDL_GetError());
-        return false;
-    }
-
+    if (!win) return false;
     ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if (!ren) {
-        ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
-    }
-    if (!ren) return false;
-
+    if (!ren) ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
-
     target_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, LOGICAL_W, LOGICAL_H);
-
     font = TTF_OpenFont("assets/fonts/DejaVuSans.ttf", 48);
-    if (!font) printf("[Warning] Font not found at assets/fonts/DejaVuSans.ttf!\n");
-
     bg_tex = load_texture(ren, "assets/background/background.png");
-
     SDL_ShowCursor(SDL_DISABLE);
     return true;
 }
@@ -71,112 +162,46 @@ void free_resources() {
     if (ren) SDL_DestroyRenderer(ren);
     if (win) SDL_DestroyWindow(win);
     if (font) TTF_CloseFont(font);
-    
-    target_tex = NULL;
-    bg_tex = NULL;
-    ren = NULL;
-    win = NULL;
-    font = NULL;
-
-    IMG_Quit();
-    TTF_Quit();
-    SDL_Quit();
+    IMG_Quit(); TTF_Quit(); SDL_Quit();
 }
 
 void launch_external_game(const char* exe_path, const char* rom_path) {
-    printf("[System] Launching core: %s\n", exe_path);
     free_resources();
-
+    usleep(100000);
     pid_t pid = fork();
-    if (pid < 0) {
-        printf("[Error] Fork failed!\n");
-        init_resources();
-    } 
-    else if (pid == 0) {
+    if (pid == 0) {
         execl(exe_path, exe_path, rom_path, NULL);
-        perror("[Error] Exec failed");
         exit(1); 
-    } 
-    else {
+    } else {
         waitpid(pid, NULL, 0);
         init_resources();
     }
 }
 
 int main(int argc, char* argv[]) {
-    (void)argc; (void)argv;
-
     config_load("configs/nanoarch.cfg");
     if (!init_resources()) return -1;
 
     MenuPage page = PAGE_MAIN;
-    int cursor = 0;
-    int selected_core_idx = 0;
+    int cursor = 0, selected_core_idx = 0;
     bool quit = false;
     SDL_Event e;
+    MgrState mstate = {
+        .page = &page,
+        .cursor = &cursor,
+        .quit = &quit,
+        .selected_core_idx = &selected_core_idx
+    };
 
     while (!quit) {
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) quit = true;
-            
-            if (e.type == SDL_KEYDOWN) {
-                int count = 0;
-                if (page == PAGE_MAIN) count = 2;
-                else if (page == PAGE_CORE_SELECT) count = CORE_COUNT;
-                else if (page == PAGE_ROM_SELECT) count = dynamic_count;
-                if (count == 0) count = 1;
-
-                if (e.key.keysym.sym == SDLK_UP) {
-                    cursor--;
-                    if (cursor < 0) cursor = count - 1;
-                }
-                else if (e.key.keysym.sym == SDLK_DOWN) {
-                    cursor++;
-                    if (cursor >= count) cursor = 0;
-                }
-
-                else if (e.key.keysym.sym == SDLK_ESCAPE) {
-                    if (page == PAGE_ROM_SELECT) {
-                        page = PAGE_CORE_SELECT;
-                        cursor = selected_core_idx;
-                        clear_dynamic_list();
-                    } else if (page == PAGE_CORE_SELECT) {
-                        page = PAGE_MAIN;
-                        cursor = 0;
-                    } else {
-                        quit = true;
-                    }
-                }
-
-                else if (e.key.keysym.sym == SDLK_RETURN) {
-                    if (page == PAGE_MAIN) {
-                        if (cursor == 0) {
-                            page = PAGE_CORE_SELECT;
-                            cursor = 0;
-                        } else {
-                            quit = true;
-                        }
-                    } 
-                    else if (page == PAGE_CORE_SELECT) {
-                        selected_core_idx = cursor;
-                        scan_roms(selected_core_idx);
-                        page = PAGE_ROM_SELECT;
-                        cursor = 0;
-                    } 
-                    else if (page == PAGE_ROM_SELECT) {
-                        if (dynamic_list && cursor < dynamic_count) {
-                            if (strcmp(dynamic_list[cursor], "<-- Back") == 0) {
-                                page = PAGE_CORE_SELECT;
-                                cursor = selected_core_idx;
-                                clear_dynamic_list();
-                            } else {
-                                char rom_path[512];
-                                snprintf(rom_path, sizeof(rom_path), "roms/%s/%s", 
-                                         supported_cores[selected_core_idx].sub_dir, 
-                                         dynamic_list[cursor]);
-                                launch_external_game(supported_cores[selected_core_idx].binary_path, rom_path);
-                            }
-                        }
+            if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) {
+                bool pressed = (e.type == SDL_KEYDOWN);
+                for (int i = 0; i < sizeof(key_map)/sizeof(key_map[0]); i++) {
+                    if (e.key.keysym.sym == key_map[i].sdl_key) {
+                        mgr_input_handler(key_map[i].vkey, pressed, &mstate);
+                        break;
                     }
                 }
             }
@@ -187,61 +212,56 @@ int main(int argc, char* argv[]) {
             SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
             SDL_RenderClear(ren);
             draw_background(ren, bg_tex, LOGICAL_W, LOGICAL_H);
-            {
-                SDL_Color menu_color = (page == PAGE_MAIN) 
-                                     ? (SDL_Color){255, 255, 255, 255} 
-                                     : (SDL_Color){100, 100, 100, 255};
-                
-                for (int i = 0; i < 2; i++) {
-                    bool is_sel = (page == PAGE_MAIN && cursor == i);
-                    draw_menu_text(ren, font, main_menu_items[i], 100, 300 + i * 80, menu_color, is_sel);
-                }
+
+            float menu_x = LOGICAL_W * MENU_X_REL;
+            float panel_x = LOGICAL_W * PANEL_X_REL;
+            float item_h = LOGICAL_H * ITEM_H_REL;
+
+            SDL_Color main_c = (page == PAGE_MAIN) ? (SDL_Color){255, 255, 255, 255} : (SDL_Color){100, 100, 100, 255};
+            for (int i = 0; i < 3; i++) {
+                bool sel = (page == PAGE_MAIN && cursor == i);
+                draw_menu_text(ren, font, main_menu_items[i], menu_x, (LOGICAL_H * 0.4f) + i * item_h, main_c, sel);
             }
 
-            if (page == PAGE_CORE_SELECT || page == PAGE_ROM_SELECT) {
-                draw_translucent_panel(ren, 500, 0, LOGICAL_W - 500, LOGICAL_H);
-                draw_menu_text(ren, font, "Select System:", 540, 50, (SDL_Color){200,200,255,255}, false);
+            if (page != PAGE_MAIN) {
+                draw_translucent_panel(ren, panel_x, 0, LOGICAL_W - panel_x, LOGICAL_H);
+                float content_x = panel_x + 40;
+
                 if (page == PAGE_CORE_SELECT) {
+                    draw_menu_text(ren, font, "SELECT SYSTEM", content_x, LOGICAL_H * TITLE_Y_REL, (SDL_Color){200, 200, 255, 255}, false);
                     for (int i = 0; i < CORE_COUNT; i++) {
-                        bool is_sel = (cursor == i);
-                        SDL_Color c = {240, 240, 240, 255};
-                        draw_menu_text(ren, font, supported_cores[i].display_name, 550, 150 + i * 80, c, is_sel);
+                        draw_menu_text(ren, font, supported_cores[i].display_name, content_x, (LOGICAL_H * LIST_Y_REL) + i * item_h, (SDL_Color){240, 240, 240, 255}, (cursor == i));
                     }
                 }
-            }
-
-            if (page == PAGE_ROM_SELECT) {
-                draw_translucent_panel(ren, 500, 0, LOGICAL_W - 500, LOGICAL_H);
-
-                draw_menu_text(ren, font, "Select Game:", 540, 50, (SDL_Color){200,255,200,255}, false);
-
-                int start_idx = 0;
-                int max_visible = 8;
-                if (cursor > max_visible - 1) {
-                    start_idx = cursor - (max_visible - 1);
-                }
-
-                for (int i = 0; i < dynamic_count; i++) {
-                    if (i >= start_idx && i < start_idx + max_visible) {
-                        bool is_sel = (cursor == i);
-                        SDL_Color c = {220, 220, 220, 255};
-                        int screen_y = 150 + (i - start_idx) * 60;
-                        draw_menu_text(ren, font, dynamic_list[i], 550, screen_y, c, is_sel);
+                else if (page == PAGE_ROM_SELECT) {
+                    draw_menu_text(ren, font, "SELECT GAME", content_x, LOGICAL_H * TITLE_Y_REL, (SDL_Color){200, 255, 200, 255}, false);
+                    int start_idx = (cursor > 7) ? cursor - 7 : 0;
+                    for (int i = 0; i < 8 && (start_idx + i) < dynamic_count; i++) {
+                        int idx = start_idx + i;
+                        draw_menu_text(ren, font, dynamic_list[idx], content_x, (LOGICAL_H * LIST_Y_REL) + i * (item_h * 0.8f), (SDL_Color){220, 220, 220, 255}, (cursor == idx));
                     }
+                }
+                else if (page == PAGE_SETTINGS) {
+                    draw_menu_text(ren, font, "SETTINGS", content_x, LOGICAL_H * TITLE_Y_REL, (SDL_Color){255, 255, 100, 255}, false);
+                    char vol_txt[32]; snprintf(vol_txt, sizeof(vol_txt), "Volume: %d%%", g_config.volume);
+                    draw_menu_text(ren, font, vol_txt, content_x, LOGICAL_H * 0.4f, (SDL_Color){255, 255, 255, 255}, true);
+
+                    SDL_Rect bar_bg = { content_x, LOGICAL_H * 0.5f, LOGICAL_W * 0.3f, 20 };
+                    SDL_Rect bar_fg = { content_x, LOGICAL_H * 0.5f, (bar_bg.w * g_config.volume) / 100, 20 };
+                    SDL_SetRenderDrawColor(ren, 80, 80, 80, 255); SDL_RenderFillRect(ren, &bar_bg);
+                    SDL_SetRenderDrawColor(ren, 0, 255, 0, 255); SDL_RenderFillRect(ren, &bar_fg);
+                    draw_menu_text(ren, font, "Left/Right to adjust, B to save", content_x, LOGICAL_H * 0.65f, (SDL_Color){150, 150, 150, 255}, false);
                 }
             }
 
             SDL_SetRenderTarget(ren, NULL);
             SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
             SDL_RenderClear(ren);
-
-            SDL_Rect dst_rect = { 0, 0, g_config.physical_w, g_config.physical_h };
-            SDL_RenderCopyEx(ren, target_tex, NULL, &dst_rect, (double)g_config.rotation, NULL, SDL_FLIP_NONE);
-
+            SDL_Rect dst = { 0, 0, g_config.physical_w, g_config.physical_h };
+            SDL_RenderCopyEx(ren, target_tex, NULL, &dst, (double)g_config.rotation, NULL, SDL_FLIP_NONE);
             SDL_RenderPresent(ren);
         }
     }
-
     free_resources();
     clear_dynamic_list();
     return 0;
