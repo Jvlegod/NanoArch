@@ -53,6 +53,26 @@ static input_map_t nes_keymap[] = {
     {KEY_ESC,       VKEY_EXT_QUIT}
 };
 
+#define JOYSTICK_DEVICE_PATH "/dev/input/event7"
+
+static input_map_t nes_joymap[] = {
+    {ABS_HAT0Y,     VKEY_UP},    
+    {ABS_HAT0Y,     VKEY_DOWN},  
+    {ABS_HAT0X,     VKEY_LEFT},  
+    {ABS_HAT0X,     VKEY_RIGHT}, 
+
+    {ABS_Y,         VKEY_UP},    
+    {ABS_Y,         VKEY_DOWN},  
+    {ABS_X,         VKEY_LEFT},  
+    {ABS_X,         VKEY_RIGHT}, 
+
+    {BTN_A,         VKEY_A},
+    {BTN_B,         VKEY_B},
+    {BTN_START,     VKEY_START},
+    {BTN_SELECT,    VKEY_SELECT},
+    {BTN_TR,        VKEY_EXT_QUIT}
+};
+
 #define NES_A       (1 << 0)
 #define NES_B       (1 << 1)
 #define NES_SELECT  (1 << 2)
@@ -92,6 +112,7 @@ static int *zoom_y_tab;
 
 // Input
 static input_ctx_t *nes_ictx = NULL;
+static input_ctx_t *nes_ijoy = NULL;
 
 // ROM Info
 char szRomName[256];
@@ -257,12 +278,16 @@ int main(int argc, char **argv)
 
     Init_NeoPalette();
     // 2. Initialize Input
-    nes_ictx = input_init(INPUT_DEVICE_PATH, nes_keymap, sizeof(nes_keymap)/sizeof(input_map_t));
-    if (!nes_ictx) {
-        printf("[Input] Error: Could not open %s\n", INPUT_DEVICE_PATH);
-        return -1;
+    nes_ictx = input_init(INPUT_DEVICE_PATH, INPUT_TYPE_KEYBOARD, nes_keymap, sizeof(nes_keymap)/sizeof(input_map_t));
+    if (nes_ictx) {
+        input_set_handler(nes_ictx, nes_input_handler, NULL);
     }
-    input_set_handler(nes_ictx, nes_input_handler, NULL);
+
+    nes_ijoy = input_init(JOYSTICK_DEVICE_PATH, INPUT_TYPE_JOYSTICK, nes_joymap, sizeof(nes_joymap)/sizeof(input_map_t));
+    if (nes_ijoy) {
+        input_set_handler(nes_ijoy, nes_input_handler, NULL);
+        printf("[Input] Joystick initialized at %s\n", JOYSTICK_DEVICE_PATH);
+    }
 
     // 3. Start Game
     start_application(argv[1]);
@@ -270,7 +295,8 @@ int main(int argc, char **argv)
     // 4. Main Loop (Input Polling)
     printf("[System] NES Started. Z=A, X=B, Enter=Start, Back=Select, ESC=Quit\n");
     while (g_bLoop) {
-        input_update(nes_ictx);
+        if (nes_ictx) input_update(nes_ictx);
+        if (nes_ijoy) input_update(nes_ijoy);
         usleep(1000); // 1ms sleep to prevent 100% CPU usage in input thread
     }
 
@@ -281,7 +307,8 @@ int main(int argc, char **argv)
     }
 
     InfoNES_SoundClose();
-    input_close(nes_ictx);
+    if (nes_ictx) input_close(nes_ictx);
+    if (nes_ijoy) input_close(nes_ijoy);
 
     if (fb_mem && fb_mem != (void*)-1) munmap(fb_mem, screen_width);
     if (fb_fd >= 0) close(fb_fd);

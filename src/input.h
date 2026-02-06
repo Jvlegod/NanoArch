@@ -25,6 +25,7 @@ typedef void (*input_handler_t)(vkey_t vkey, int pressed, void *user_data);
 
 typedef struct {
     int fd;
+    input_type_t type;
     uint32_t state;
     input_map_t *maps;
     int map_count;
@@ -32,7 +33,7 @@ typedef struct {
     void *user_data;
 } input_ctx_t;
 
-input_ctx_t* input_init(const char* device_path, input_map_t* maps, int map_count);
+input_ctx_t* input_init(const char* device_path, input_type_t type, input_map_t* maps, int map_count);
 void input_set_handler(input_ctx_t* ctx, input_handler_t handler, void *user_data);
 void input_update(input_ctx_t* ctx);
 int  input_is_pressed(input_ctx_t* ctx, vkey_t vkey);

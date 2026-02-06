@@ -57,6 +57,22 @@ static sdl_input_map_t key_map[] = {
     {SDLK_RETURN, VKEY_START},  {SDLK_ESCAPE, VKEY_EXT_QUIT}
 };
 
+#define JOYSTICK_DEVICE_PATH "/dev/input/event7"
+static input_map_t mgr_joymap[] = {
+    {ABS_HAT0Y,     VKEY_UP},    
+    {ABS_HAT0Y,     VKEY_DOWN},  
+    {ABS_HAT0X,     VKEY_LEFT},  
+    {ABS_HAT0X,     VKEY_RIGHT}, 
+    {ABS_Y,         VKEY_UP},
+    {ABS_Y,         VKEY_DOWN},  
+    {ABS_X,         VKEY_LEFT},  
+    {ABS_X,         VKEY_RIGHT}, 
+    {BTN_A,         VKEY_A},
+    {BTN_B,         VKEY_B},
+    {BTN_START,     VKEY_START},
+    {BTN_TR,        VKEY_EXT_QUIT}
+};
+
 const char* main_menu_items[] = { "Start Game", "Settings", "Quit" };
 
 void mgr_input_handler(vkey_t vkey, int pressed, void *user_data) {
@@ -193,6 +209,12 @@ int main(int argc, char* argv[]) {
         .selected_core_idx = &selected_core_idx
     };
 
+    input_ctx_t *ictx_joy = input_init(JOYSTICK_DEVICE_PATH, INPUT_TYPE_JOYSTICK, mgr_joymap, 13);
+    if (ictx_joy) {
+        input_set_handler(ictx_joy, mgr_input_handler, &mstate);
+        printf("[Input] Frontend Joystick initialized: %s\n", JOYSTICK_DEVICE_PATH);
+    }
+    
     while (!quit) {
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) quit = true;
@@ -205,6 +227,10 @@ int main(int argc, char* argv[]) {
                     }
                 }
             }
+        }
+
+        if (ictx_joy) {
+            input_update(ictx_joy);
         }
 
         if (ren) {
@@ -262,6 +288,8 @@ int main(int argc, char* argv[]) {
             SDL_RenderPresent(ren);
         }
     }
+
+    if (ictx_joy) input_close(ictx_joy);
     free_resources();
     clear_dynamic_list();
     return 0;

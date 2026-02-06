@@ -3,7 +3,11 @@
 #define ENABLE_LCD 1
 
 /* --- configs --- */
+// keyboard
 #define INPUT_DEVICE_PATH "/dev/input/event3" 
+// joystick
+#define JOYSTICK_DEVICE_PATH "/dev/input/event7"
+// asound
 #define AUDIO_SAMPLE_RATE 44100
 #define SAVE_FILE_EXTENSION ".sav"
 
@@ -42,6 +46,24 @@ static input_map_t gb_keymap[] = {
     {KEY_R,         VKEY_EXT_RESET}, 
     {KEY_P,         VKEY_EXT_PALETTE}, 
     {KEY_ESC,       VKEY_EXT_QUIT}
+};
+
+static input_map_t gb_joymap[] = {
+    {ABS_HAT0Y,     VKEY_UP},    // up
+    {ABS_HAT0Y,     VKEY_DOWN},  // down
+    {ABS_HAT0X,     VKEY_LEFT},  // left
+    {ABS_HAT0X,     VKEY_RIGHT}, // right
+
+    {ABS_Y,         VKEY_UP}, 
+    {ABS_Y,         VKEY_DOWN},
+    {ABS_X,         VKEY_LEFT},
+    {ABS_X,         VKEY_RIGHT},
+
+    {BTN_A,         VKEY_A}, 
+    {BTN_B,         VKEY_B}, 
+    {BTN_START,     VKEY_START}, 
+    {BTN_SELECT,    VKEY_SELECT},
+    {BTN_TR,        VKEY_EXT_QUIT}
 };
 
 static struct minigb_apu_ctx apu_ctx;
@@ -211,17 +233,25 @@ int main(int argc, char **argv)
         printf("[Warning] Audio system init failed\n");
     }
 
-    input_ctx_t *ictx = input_init(INPUT_DEVICE_PATH, gb_keymap, 12);
-    if (!ictx) {
-        printf("[Input] Error: Failed to open %s\n", INPUT_DEVICE_PATH);
-        return 1;
+    input_ctx_t *ictx_kbd = input_init(INPUT_DEVICE_PATH, INPUT_TYPE_KEYBOARD, gb_keymap, 12);
+    if (!ictx_kbd) {
+        printf("[Input] Warning: Failed to open keyboard at %s\n", INPUT_DEVICE_PATH);
+    } else {
+        input_set_handler(ictx_kbd, gb_input_handler, &gb);
     }
-    input_set_handler(ictx, gb_input_handler, &gb);
+
+    input_ctx_t *ictx_joy = input_init(JOYSTICK_DEVICE_PATH, INPUT_TYPE_JOYSTICK, gb_joymap, 9);
+    if (!ictx_joy) {
+        printf("[Input] Warning: No joystick detected at %s\n", JOYSTICK_DEVICE_PATH);
+    } else {
+        input_set_handler(ictx_joy, gb_input_handler, &gb);
+    }
 
     printf("[System] Started. Keys: Z=A, X=B, Enter=Start, Back=Select, Space=Fast, R=Reset, P=Palette, ESC=Quit\n");
 
     while(!should_quit) {
-        input_update(ictx);
+        if (ictx_kbd) input_update(ictx_kbd);
+        if (ictx_joy) input_update(ictx_joy);
         gb_run_frame(&gb);
 
         static int skip_counter = 0;
@@ -250,7 +280,8 @@ int main(int argc, char **argv)
 
     handle_save(argv[1], 1);
     mfb_close();
-    input_close(ictx);
+    if (ictx_kbd) input_close(ictx_kbd);
+    if (ictx_joy) input_close(ictx_joy);
     audio_close(actx);
     if (pcm_handle) snd_pcm_close(pcm_handle);
     if (audio_buffer) free(audio_buffer);
