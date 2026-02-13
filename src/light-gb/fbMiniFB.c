@@ -48,7 +48,7 @@ int mfb_open(const char* title, int width, int height)
     return 1;
 }
 
-int mfb_update(void* buffer)
+int mfb_update(void* buffer, int rotation)
 {
     if (fb_mem == NULL || buffer == NULL) return -1;
 
@@ -59,39 +59,56 @@ int mfb_update(void* buffer)
     const int GB_W = 160;
     const int GB_H = 144;
     const int SCALE = 3; 
-    const int OUT_W = GB_W * SCALE;
-    const int OUT_H = GB_H * SCALE;
-
-    int start_x = (screen_w - OUT_W) / 2;
-    int start_y = (screen_h - OUT_H) / 2;
-
-    if (start_x < 0) start_x = 0;
-    if (start_y < 0) start_y = 0;
 
     uint32_t *src = (uint32_t *)buffer;
 
-    
+    int logic_out_w, logic_out_h;
+    if (rotation == 90 || rotation == 270) {
+        logic_out_w = GB_H * SCALE;
+        logic_out_h = GB_W * SCALE;
+    } else {
+        logic_out_w = GB_W * SCALE;
+        logic_out_h = GB_H * SCALE;
+    }
+
+    int start_x = (screen_w - logic_out_w) / 2;
+    int start_y = (screen_h - logic_out_h) / 2;
 
     for (int y = 0; y < GB_H; y++) {
-        for (int i = 0; i < SCALE; i++) {
-            unsigned char *dst_line = fb_mem + (y * SCALE + i + start_y) * finfo.line_length + (start_x * bpp);
-            
-            if (bpp == 4) {
-                uint32_t *dst_ptr = (uint32_t *)dst_line;
-                for (int x = 0; x < GB_W; x++) {
-                    uint32_t pixel = src[y * GB_W + x];
-                    for (int j = 0; j < SCALE; j++) {
-                        dst_ptr[x * SCALE + j] = pixel;
+        for (int x = 0; x < GB_W; x++) {
+            uint32_t pixel = src[y * GB_W + x];
+
+            uint16_t color16 = (bpp == 2) ? 
+                (((pixel >> 19) << 11) | (((pixel >> 10) & 0x3F) << 5) | ((pixel >> 3) & 0x1F)) : 0;
+
+            for (int i = 0; i < SCALE; i++) {
+                for (int j = 0; j < SCALE; j++) {
+                    int phys_x, phys_y;
+
+                    switch (rotation) {
+                        case 90:
+                            phys_x = (GB_H - 1 - y) * SCALE + i + start_x;
+                            phys_y = x * SCALE + j + start_y;
+                            break;
+                        case 270:
+                            phys_x = y * SCALE + i + start_x;
+                            phys_y = (GB_W - 1 - x) * SCALE + j + start_y;
+                            break;
+                        case 180:
+                            phys_x = (GB_W - 1 - x) * SCALE + i + start_x;
+                            phys_y = (GB_H - 1 - y) * SCALE + j + start_y;
+                            break;
+                        case 0:
+                        default:
+                            phys_x = x * SCALE + i + start_x;
+                            phys_y = y * SCALE + j + start_y;
+                            break;
                     }
-                }
-            } 
-            else if (bpp == 2) {
-                uint16_t *dst_ptr = (uint16_t *)dst_line;
-                for (int x = 0; x < GB_W; x++) {
-                    uint32_t p = src[y * GB_W + x];
-                    uint16_t color = ((p >> 19) << 11) | (((p >> 10) & 0x3F) << 5) | (p >> 3);
-                    for (int j = 0; j < SCALE; j++) {
-                        dst_ptr[x * SCALE + j] = color;
+
+                    if (phys_x >= 0 && phys_x < screen_w && phys_y >= 0 && phys_y < screen_h) {
+                        unsigned char *dst = fb_mem + (phys_y * finfo.line_length) + (phys_x * bpp);
+                        if (bpp == 4) *(uint32_t *)dst = pixel;
+                        else if (bpp == 2) *(uint16_t *)dst = color16;
                     }
                 }
             }

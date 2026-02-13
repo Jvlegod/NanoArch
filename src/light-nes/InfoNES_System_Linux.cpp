@@ -39,7 +39,7 @@ extern "C" {
 /* Configuration                                                    */
 /*-------------------------------------------------------------------*/
 
-#define INPUT_DEVICE_PATH "/dev/input/event3" 
+#define INPUT_DEVICE_PATH "/dev/input/event0" 
 
 static input_map_t nes_keymap[] = {
     {KEY_UP,        VKEY_UP}, 
@@ -52,8 +52,6 @@ static input_map_t nes_keymap[] = {
     {KEY_BACKSPACE, VKEY_SELECT},
     {KEY_ESC,       VKEY_EXT_QUIT}
 };
-
-#define JOYSTICK_DEVICE_PATH "/dev/input/event7"
 
 static input_map_t nes_joymap[] = {
     {ABS_HAT0Y,     VKEY_UP},    
@@ -283,10 +281,10 @@ int main(int argc, char **argv)
         input_set_handler(nes_ictx, nes_input_handler, NULL);
     }
 
-    nes_ijoy = input_init(JOYSTICK_DEVICE_PATH, INPUT_TYPE_JOYSTICK, nes_joymap, sizeof(nes_joymap)/sizeof(input_map_t));
+    nes_ijoy = input_init(g_config.joystick, INPUT_TYPE_JOYSTICK, nes_joymap, sizeof(nes_joymap)/sizeof(input_map_t));
     if (nes_ijoy) {
         input_set_handler(nes_ijoy, nes_input_handler, NULL);
-        printf("[Input] Joystick initialized at %s\n", JOYSTICK_DEVICE_PATH);
+        printf("[Input] Joystick initialized at %s\n", g_config.joystick);
     }
 
     // 3. Start Game
@@ -505,31 +503,47 @@ void *InfoNES_MemorySet(void *dest, int c, int count)
 void InfoNES_LoadFrame() {
     if (!fb_mem) return;
 
-    uint32_t *dest_ptr = (uint32_t *)fb_mem;
+    int rotation = g_config.rotation;
+    int scale = (rotation == 90 || rotation == 270) ? 2 : LCD_SCALE;
+    int logic_w = (rotation == 90 || rotation == 270) ? (240 * scale) : (256 * scale);
+    int logic_h = (rotation == 90 || rotation == 270) ? (256 * scale) : (240 * scale);
 
-    int render_w = 256 * LCD_SCALE;
-    int render_h = 240 * LCD_SCALE;
-
-    int offset_x = (lcd_width > render_w) ? (lcd_width - render_w) / 2 : 0;
-    int offset_y = (lcd_height > render_h) ? (lcd_height - render_h) / 2 : 0;
+    int start_x = (lcd_width - logic_w) / 2;
+    int start_y = (lcd_height - logic_h) / 2;
+    if (start_x < 0) start_x = 0;
+    if (start_y < 0) start_y = 0;
 
     for (int y = 0; y < 240; y++) {
         WORD *line_src = &WorkFrame[y * NES_DISP_WIDTH];
-
-        uint32_t *first_line_dest = dest_ptr + ((y * LCD_SCALE + offset_y) * lcd_width) + offset_x;
-
         for (int x = 0; x < 256; x++) {
             uint32_t color = color_LUT32[line_src[x]];
-            uint32_t *p = first_line_dest + (x * LCD_SCALE);
+            int px, py;
 
-            for (int sx = 0; sx < LCD_SCALE; sx++) {
-                p[sx] = color;
+            switch (rotation) {
+                case 90:
+                    px = (239 - y) * scale + start_x;
+                    py = x * scale + start_y;
+                    break;
+                case 270:
+                    px = y * scale + start_x;
+                    py = (255 - x) * scale + start_y;
+                    break;
+                case 180:
+                    px = (255 - x) * scale + start_x;
+                    py = (239 - y) * scale + start_y;
+                    break;
+                default:
+                    px = x * scale + start_x;
+                    py = y * scale + start_y;
+                    break;
             }
-        }
 
-        for (int sy = 1; sy < LCD_SCALE; sy++) {
-            uint32_t *next_line_dest = first_line_dest + (sy * lcd_width);
-            memcpy(next_line_dest, first_line_dest, render_w * sizeof(uint32_t));
+            for (int sy = 0; sy < scale; sy++) {
+                uint32_t *p_line = (uint32_t *)(fb_mem + (py + sy) * line_width + px * px_width);
+                for (int sx = 0; sx < scale; sx++) {
+                    p_line[sx] = color;
+                }
+            }
         }
     }
 }

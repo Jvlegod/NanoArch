@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/types.h>
+#include <math.h>
 
 #include "core_manager.h"
 #include "render.h"
@@ -18,8 +19,8 @@
 #define LOGICAL_W  1280
 #define LOGICAL_H  720
 
-#define MENU_X_REL      0.08f
-#define PANEL_X_REL     0.42f
+#define MENU_X_REL      0.05f
+#define PANEL_X_REL     0.35f
 #define TITLE_Y_REL     0.10f
 #define LIST_Y_REL      0.22f
 #define ITEM_H_REL      0.10f 
@@ -31,7 +32,7 @@ typedef enum {
     PAGE_SETTINGS
 } MenuPage;
 
-/* SDL2 */
+/* SDL2 Resources */
 SDL_Window* win = NULL;
 SDL_Renderer* ren = NULL;
 SDL_Texture* target_tex = NULL;
@@ -57,7 +58,6 @@ static sdl_input_map_t key_map[] = {
     {SDLK_RETURN, VKEY_START},  {SDLK_ESCAPE, VKEY_EXT_QUIT}
 };
 
-#define JOYSTICK_DEVICE_PATH "/dev/input/event7"
 static input_map_t mgr_joymap[] = {
     {ABS_HAT0Y,     VKEY_UP},    
     {ABS_HAT0Y,     VKEY_DOWN},  
@@ -155,19 +155,37 @@ void mgr_input_handler(vkey_t vkey, int pressed, void *user_data) {
 
 bool init_resources() {
     if (SDL_WasInit(SDL_INIT_VIDEO) == 0) {
-        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) return false;
-        TTF_Init(); IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
+        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) {
+            printf("[SDL] Init failed: %s\n", SDL_GetError());
+            return false;
+        }
+        TTF_Init(); 
+        IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
     }
-    win = SDL_CreateWindow("NanoArch", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 
+
+    win = SDL_CreateWindow("NanoArch", 
+                           SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 
                            g_config.physical_w, g_config.physical_h, 
                            SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN);
-    if (!win) return false;
-    ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if (!ren) ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
+    if (!win) {
+        printf("[SDL] Window creation failed: %s\n", SDL_GetError());
+        return false;
+    }
+
+    // ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    ren = SDL_CreateRenderer(win, -1, 0);
+    if (!ren) {
+        printf("[SDL] Accelerated renderer failed, fallback to software.\n");
+        ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
+    }
+    
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+
     target_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, LOGICAL_W, LOGICAL_H);
+
     font = TTF_OpenFont("assets/fonts/DejaVuSans.ttf", 48);
     bg_tex = load_texture(ren, "assets/background/background.png");
+    
     SDL_ShowCursor(SDL_DISABLE);
     return true;
 }
@@ -178,18 +196,25 @@ void free_resources() {
     if (ren) SDL_DestroyRenderer(ren);
     if (win) SDL_DestroyWindow(win);
     if (font) TTF_CloseFont(font);
-    IMG_Quit(); TTF_Quit(); SDL_Quit();
+    IMG_Quit(); 
+    TTF_Quit(); 
+    SDL_Quit();
 }
 
 void launch_external_game(const char* exe_path, const char* rom_path) {
     free_resources();
     usleep(100000);
+    
     pid_t pid = fork();
     if (pid == 0) {
         execl(exe_path, exe_path, rom_path, NULL);
+        perror("Launch failed");
         exit(1); 
     } else {
-        waitpid(pid, NULL, 0);
+        int status;
+        waitpid(pid, &status, 0);
+
+        config_load("configs/nanoarch.cfg");
         init_resources();
     }
 }
@@ -208,13 +233,13 @@ int main(int argc, char* argv[]) {
         .quit = &quit,
         .selected_core_idx = &selected_core_idx
     };
-
-    input_ctx_t *ictx_joy = input_init(JOYSTICK_DEVICE_PATH, INPUT_TYPE_JOYSTICK, mgr_joymap, 13);
+    input_ctx_t *ictx_joy = input_init(g_config.joystick, INPUT_TYPE_JOYSTICK, mgr_joymap, 13);
     if (ictx_joy) {
         input_set_handler(ictx_joy, mgr_input_handler, &mstate);
-        printf("[Input] Frontend Joystick initialized: %s\n", JOYSTICK_DEVICE_PATH);
+        printf("[Input] Frontend Joystick initialized: %s\n", g_config.joystick);
+    } else {
+        printf("[Input] Warning: Joystick not found at %s\n", g_config.joystick);
     }
-    
     while (!quit) {
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) quit = true;
@@ -242,13 +267,11 @@ int main(int argc, char* argv[]) {
             float menu_x = LOGICAL_W * MENU_X_REL;
             float panel_x = LOGICAL_W * PANEL_X_REL;
             float item_h = LOGICAL_H * ITEM_H_REL;
-
             SDL_Color main_c = (page == PAGE_MAIN) ? (SDL_Color){255, 255, 255, 255} : (SDL_Color){100, 100, 100, 255};
             for (int i = 0; i < 3; i++) {
                 bool sel = (page == PAGE_MAIN && cursor == i);
                 draw_menu_text(ren, font, main_menu_items[i], menu_x, (LOGICAL_H * 0.4f) + i * item_h, main_c, sel);
             }
-
             if (page != PAGE_MAIN) {
                 draw_translucent_panel(ren, panel_x, 0, LOGICAL_W - panel_x, LOGICAL_H);
                 float content_x = panel_x + 40;
@@ -272,8 +295,8 @@ int main(int argc, char* argv[]) {
                     char vol_txt[32]; snprintf(vol_txt, sizeof(vol_txt), "Volume: %d%%", g_config.volume);
                     draw_menu_text(ren, font, vol_txt, content_x, LOGICAL_H * 0.4f, (SDL_Color){255, 255, 255, 255}, true);
 
-                    SDL_Rect bar_bg = { content_x, LOGICAL_H * 0.5f, LOGICAL_W * 0.3f, 20 };
-                    SDL_Rect bar_fg = { content_x, LOGICAL_H * 0.5f, (bar_bg.w * g_config.volume) / 100, 20 };
+                    SDL_Rect bar_bg = { (int)content_x, (int)(LOGICAL_H * 0.5f), (int)(LOGICAL_W * 0.3f), 20 };
+                    SDL_Rect bar_fg = { (int)content_x, (int)(LOGICAL_H * 0.5f), (int)((bar_bg.w * g_config.volume) / 100), 20 };
                     SDL_SetRenderDrawColor(ren, 80, 80, 80, 255); SDL_RenderFillRect(ren, &bar_bg);
                     SDL_SetRenderDrawColor(ren, 0, 255, 0, 255); SDL_RenderFillRect(ren, &bar_fg);
                     draw_menu_text(ren, font, "Left/Right to adjust, B to save", content_x, LOGICAL_H * 0.65f, (SDL_Color){150, 150, 150, 255}, false);
@@ -283,8 +306,43 @@ int main(int argc, char* argv[]) {
             SDL_SetRenderTarget(ren, NULL);
             SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
             SDL_RenderClear(ren);
-            SDL_Rect dst = { 0, 0, g_config.physical_w, g_config.physical_h };
-            SDL_RenderCopyEx(ren, target_tex, NULL, &dst, (double)g_config.rotation, NULL, SDL_FLIP_NONE);
+
+            int phys_w = g_config.physical_w;
+            int phys_h = g_config.physical_h;
+
+            int visual_w = phys_w;
+            int visual_h = phys_h;
+            if (g_config.rotation == 90 || g_config.rotation == 270) {
+                visual_w = phys_h;
+                visual_h = phys_w;
+            }
+
+            float scale_x = (float)visual_w / LOGICAL_W;
+            float scale_y = (float)visual_h / LOGICAL_H;
+            float scale = (scale_x < scale_y) ? scale_x : scale_y;
+
+            int final_w = (int)(LOGICAL_W * scale);
+            int final_h = (int)(LOGICAL_H * scale);
+
+            SDL_Rect dst;
+            dst.w = final_w;
+            dst.h = final_h;
+
+            SDL_Point center;
+            center.x = final_w / 2;
+            center.y = final_h / 2;
+
+            if (g_config.rotation == 90) {
+                dst.x = (phys_w - final_w) / 2; 
+                dst.y = (phys_h - final_h) / 2;
+
+                SDL_RenderCopyEx(ren, target_tex, NULL, &dst, (double)g_config.rotation, NULL, SDL_FLIP_NONE);
+            } else {
+                dst.x = (phys_w - final_w) / 2;
+                dst.y = (phys_h - final_h) / 2;
+                SDL_RenderCopyEx(ren, target_tex, NULL, &dst, (double)g_config.rotation, NULL, SDL_FLIP_NONE);
+            }
+
             SDL_RenderPresent(ren);
         }
     }

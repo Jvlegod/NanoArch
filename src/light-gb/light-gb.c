@@ -4,9 +4,9 @@
 
 /* --- configs --- */
 // keyboard
-#define INPUT_DEVICE_PATH "/dev/input/event3" 
+#define INPUT_DEVICE_PATH "/dev/input/event0" 
 // joystick
-#define JOYSTICK_DEVICE_PATH "/dev/input/event7"
+// #define JOYSTICK_DEVICE_PATH "/dev/input/event3"
 // asound
 #define AUDIO_SAMPLE_RATE 44100
 #define SAVE_FILE_EXTENSION ".sav"
@@ -200,53 +200,51 @@ int main(int argc, char **argv)
     struct gb_s gb;
     enum gb_init_error_e ret;
     config_load("configs/nanoarch.cfg");
-
     if(argc != 2) {
         printf("Usage: %s ROM_FILE\n", argv[0]);
         return 1;
     }
-
+    
     priv.rom = read_file(argv[1], NULL);
     if (!priv.rom) { printf("Failed to read ROM\n"); return 1; }
-
+    
     ret = gb_init(&gb, &gb_rom_read, &gb_cart_ram_read, &gb_cart_ram_write, &gb_error, &priv);
     if(ret != GB_INIT_NO_ERROR) { printf("GB Init Error: %d\n", ret); return 1; }
-
+    
     gb_get_save_size_s(&gb, &priv.save_size);
     handle_save(argv[1], 0);
     
     time_t rawtime; time(&rawtime);
     gb_set_rtc(&gb, localtime(&rawtime));
-
+    
     memcpy(priv.palette, palettes[0], sizeof(priv.palette));
-#if ENABLE_LCD
+    #if ENABLE_LCD
     gb_init_lcd(&gb, &lcd_draw_line);
-#endif
+    #endif
     if (mfb_open("Peanut-GB", LCD_WIDTH, LCD_HEIGHT) < 0) return 1;
     
     actx = audio_init(44100, 2, g_config.volume, 0);
-
+    
     if (actx) {
         minigb_apu_audio_init(&apu_ctx);
         audio_buffer = malloc(AUDIO_SAMPLES_TOTAL * sizeof(audio_sample_t));
     } else {
         printf("[Warning] Audio system init failed\n");
     }
-
+    
     input_ctx_t *ictx_kbd = input_init(INPUT_DEVICE_PATH, INPUT_TYPE_KEYBOARD, gb_keymap, 12);
     if (!ictx_kbd) {
         printf("[Input] Warning: Failed to open keyboard at %s\n", INPUT_DEVICE_PATH);
     } else {
         input_set_handler(ictx_kbd, gb_input_handler, &gb);
     }
-
-    input_ctx_t *ictx_joy = input_init(JOYSTICK_DEVICE_PATH, INPUT_TYPE_JOYSTICK, gb_joymap, 9);
+    
+    input_ctx_t *ictx_joy = input_init(g_config.joystick, INPUT_TYPE_JOYSTICK, gb_joymap, 9);
     if (!ictx_joy) {
-        printf("[Input] Warning: No joystick detected at %s\n", JOYSTICK_DEVICE_PATH);
+        printf("[Input] Warning: No joystick detected at %s\n", g_config.joystick);
     } else {
         input_set_handler(ictx_joy, gb_input_handler, &gb);
     }
-
     printf("[System] Started. Keys: Z=A, X=B, Enter=Start, Back=Select, Space=Fast, R=Reset, P=Palette, ESC=Quit\n");
 
     while(!should_quit) {
@@ -274,7 +272,7 @@ int main(int argc, char **argv)
                 usleep(16000);
             }
 
-            if (mfb_update(priv.fb) < 0) break;
+            if (mfb_update(priv.fb, g_config.rotation) < 0) break;
         }
     }
 

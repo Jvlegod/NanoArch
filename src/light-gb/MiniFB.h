@@ -23,7 +23,7 @@ int mfb_open(const char* name, int width, int height);
  * Will return -1 when ESC key is pressed (later on will return keycode and -1
  * on other close signal) 
  */
-int mfb_update(void* buffer);
+int mfb_update(void* buffer, int rotation);
 
 /**
  * Close the window
